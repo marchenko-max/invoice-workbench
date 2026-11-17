@@ -28,7 +28,10 @@ fs.writeFileSync(path.join(dist, 'hosted-test.html'), SKELETON + '<script src="c
 // ---- docs/: an ordinary web page. The title moves into the head, and the line meant only for the Artifact host goes.
 const titleMatch = /<title>([^<]*)<\/title>\n?/.exec(page);
 const title = titleMatch ? titleMatch[1] : 'Invoice Workbench';
-const body = page.replace(/<title>[^<]*<\/title>\n?/, '').replace(/<meta name="claude:viewport-fit-sides"[^>]*>\n?/, '');
+// the page's own stylesheet belongs in the head of a real document
+const styleMatch = /<style>[\s\S]*?<\/style>\n?/.exec(page);
+const pageStyle = styleMatch ? styleMatch[0] : '';
+const body = page.replace(/<title>[^<]*<\/title>\n?/, '').replace(/<meta name="claude:viewport-fit-sides"[^>]*>\n?/, '').replace(pageStyle, '');
 const ICON = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='6' y='3' width='20' height='26' rx='5' fill='%230071e3'/%3E%3Cpath d='M11 11h10M11 16h10M11 21h10' stroke='white' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E";
 const HEAD = '<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n' +
   '<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">\n' +
@@ -37,7 +40,7 @@ const HEAD = '<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\
   '<meta name="description" content="Issue Czech invoices, quotations and proformas in your browser. Your companies and documents stay on your own device.">\n' +
   '<title>' + title + '</title>\n' +
   '<link rel="icon" href="' + ICON + '">\n' +
-  '<style>' + RESET + '</style>\n</head>\n<body>\n';
+  '<style>' + RESET + '</style>\n' + pageStyle + '</head>\n<body>\n';
 const docs = path.join(root, 'docs');
 fs.rmSync(docs, { recursive: true, force: true });
 fs.mkdirSync(docs, { recursive: true });

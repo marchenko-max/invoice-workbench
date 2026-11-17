@@ -133,6 +133,28 @@
     return out;
   }
 
+  /**
+   * With a folder connected, the browser's copy may only hold what is not safely in the folder yet. So the moment a
+   * record is written there, or deleted, its entry here goes: a record can then never be re-created from an old copy.
+   */
+  function dropFromBrowserCopy(collection, id) {
+    try {
+      var raw = root.localStorage.getItem(LS_KEY);
+      if (!raw) return;
+      var data = JSON.parse(raw);
+      var map = data && typeof data === 'object' ? data[collection] : null;
+      if (!map || typeof map !== 'object' || !Object.prototype.hasOwnProperty.call(map, id)) return;
+      delete map[id];
+      root.localStorage.setItem(LS_KEY, JSON.stringify(data));
+    } catch (e) { /* unreadable or unwritable: there is nothing here that could come back */ }
+  }
+
+  /** How many records this browser still holds on its own. */
+  function browserCopyCount() {
+    var held = browserCopy();
+    return held.companies.length + held.invoices.length;
+  }
+
   // ------------------------------------------------------------------ the folder
 
   /** Only a page opened on its own in Chrome or Edge may pick a folder; inside claude.ai the frame is not allowed to. */
@@ -352,29 +374,42 @@
     return folderState();
   }
 
-  /** Opens the browser's folder picker. Must be called from a click. Rejects {code: 'declined'} when the person cancels. */
-  async function chooseFolder() {
+  /**
+   * Opens the browser's folder picker and resolves the folder's handle. It only asks: nothing changes until
+   * useDirectoryHandle is called with the answer. Must be called straight from a click, before anything is awaited,
+   * or the browser refuses to open the picker. Rejects {code: 'declined'} when the person cancels.
+   */
+  async function pickFolderHandle() {
     if (!folderSupported()) throw { code: 'unsupported', message: 'This browser cannot write to a folder. Use Chrome or Edge on a computer.' };
-    var handle;
     try {
-      handle = await root.showDirectoryPicker({ id: 'invoice-workbench', mode: 'readwrite' });
+      return await root.showDirectoryPicker({ id: 'invoice-workbench', mode: 'readwrite' });
     } catch (e) {
       if (e && e.name === 'AbortError') throw { code: 'declined', message: 'No folder was chosen.' };
+      if (e && e.name === 'SecurityError') throw { code: 'folder_error', message: 'The browser did not open the folder picker. Press the button again.' };
       throw fsError(e);
     }
-    return useDirectoryHandle(handle);
   }
 
-  /** Asks the browser for permission to the remembered folder again. Must be called from a click. */
-  async function reconnectFolder() {
+  /**
+   * Asks the browser for permission to the remembered folder again. It only asks: nothing changes until
+   * openRememberedFolder. Must be called straight from a click, before anything is awaited.
+   */
+  async function askFolderPermission() {
     if (!folder.handle) throw { code: 'folder_missing', message: 'No folder has been chosen yet.' };
     var state;
     try {
       state = await folder.handle.requestPermission({ mode: 'readwrite' });
     } catch (e) {
+      if (e && e.name === 'SecurityError') throw { code: 'folder_error', message: 'The browser did not ask for permission. Press the button again.' };
       throw fsError(e);
     }
     if (state !== 'granted') throw { code: 'declined', message: 'The browser was not allowed to use the folder.' };
+    return true;
+  }
+
+  /** Makes the remembered folder the place where data lives, once the browser has allowed it. */
+  async function openRememberedFolder() {
+    if (!folder.handle) throw { code: 'folder_missing', message: 'No folder has been chosen yet.' };
     await flush();
     try {
       await openFolder();
@@ -527,7 +562,9 @@
     var body = clone(doc);
     return enqueue(collection + '/' + doc.id, function () {
       if (mode === 'cloud') return base.collection(collection).doc(doc.id).set(body);
-      if (mode === 'folder') return folderPut(collection, body).catch(function (e) { throw fsError(e); });
+      if (mode === 'folder') {
+        return folderPut(collection, body).then(function () { dropFromBrowserCopy(collection, doc.id); }, function (e) { throw fsError(e); });
+      }
       local[collection][doc.id] = body;
       writeLocal();
       return undefined;
@@ -537,7 +574,9 @@
   function remove(collection, id) {
     return enqueue(collection + '/' + id, function () {
       if (mode === 'cloud') return base.collection(collection).doc(id).delete();
-      if (mode === 'folder') return folderRemove(collection, id).catch(function (e) { throw fsError(e); });
+      if (mode === 'folder') {
+        return folderRemove(collection, id).then(function () { dropFromBrowserCopy(collection, id); }, function (e) { throw fsError(e); });
+      }
       delete local[collection][id];
       writeLocal();
       return undefined;
@@ -580,12 +619,15 @@
     onStatus: onStatus,
     getMode: function () { return mode; },
     folderState: folderState,
-    chooseFolder: chooseFolder,
+    pickFolderHandle: pickFolderHandle,
     useDirectoryHandle: useDirectoryHandle,
-    reconnectFolder: reconnectFolder,
+    askFolderPermission: askFolderPermission,
+    openRememberedFolder: openRememberedFolder,
     forgetFolder: forgetFolder,
     clearBrowserCopy: clearBrowserCopy,
     browserCopy: browserCopy,
+    browserCopyCount: browserCopyCount,
+    dropFromBrowserCopy: dropFromBrowserCopy,
     savePdfCopy: savePdfCopy
   };
 })(typeof window !== 'undefined' ? window : globalThis);

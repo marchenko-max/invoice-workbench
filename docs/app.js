@@ -154,7 +154,7 @@
     setTimeout(function () {
       el.classList.add('leaving');      // it leaves the way it came
       setTimeout(function () { if (el.parentNode) el.parentNode.removeChild(el); }, 220);
-    }, kind === 'bad' ? 7000 : 3500);
+    }, kind === 'bad' ? 7000 : kind === 'long' ? 9000 : 3500);
   }
 
   function errorText(e) {
@@ -385,7 +385,13 @@
       var t = e.target && e.target.closest ? e.target.closest('button[id], a[id]') : null;
       lastPressedId = t ? t.id : '';
     }, true);
-    Store.onStatus(function (st) { storeStatus = st; renderStorageState(); renderSaveState(); });
+    Store.onStatus(function (st) {
+      storeStatus = st;
+      // with a folder connected, what the browser still holds on its own shrinks as records reach the folder
+      if (S.mode === 'folder' && S.loaded) S.moveIncomplete = Store.browserCopyCount();
+      renderStorageState();
+      renderSaveState();
+    });
     document.body.appendChild(h('datalist', { id: 'vat-list' }, C.VAT_RATES.map(function (r) { return h('option', { value: String(r) }); })));
     var r = renderer();
     if (r && r.ready) { try { await r.ready(); } catch (e) { /* the preview says so itself */ } }
@@ -466,23 +472,76 @@
     await Store.flush();
   }
 
-  async function reconnectFolder() {
+  /** True while something the person typed has not reached storage: the place it saves to must not be swapped under it. */
+  function hasUnsavedWork() {
+    return !S.example && (S.dirty || failedDocs.length > 0);
+  }
+
+  /** Reads everything again from where it is kept, after saving what is open. Does nothing if that cannot be saved. */
+  async function reloadFromStore() {
     await settleBeforeSwitch();
+    if (hasUnsavedWork()) {
+      toast('The open document has changes that could not be saved yet, so nothing was read again.', 'bad');
+      return false;
+    }
+    S.doc = null;
+    rememberOpen(null);
+    await loadData();
+    route();
+    focusPage();
+    return !S.loadError;
+  }
+
+  async function reconnectFolder() {
+    // the browser's permission prompt has to start on the click itself, so it is asked before anything else is awaited
+    var asking = Store.askFolderPermission();
+    asking.catch(function () { /* handled where it is awaited */ });
+    // access lost while working in the folder: the data on screen is the folder's, nothing needs reading again
+    var midSession = S.mode === 'folder' && S.loaded && !S.loadError && !S.folderGate;
+    if (!midSession) await settleBeforeSwitch();   // typed in the browser: saved there first, then moved in
     try {
-      await Store.reconnectFolder();
+      await asking;
+      await Store.openRememberedFolder();
     } catch (e) {
       toast(e && e.code === 'declined' ? 'The folder was not connected.' : 'The folder could not be opened. ' + errorText(e), 'bad');
+      return;
+    }
+    if (midSession) {
+      // what could not be written while the folder was closed goes out now
+      await settleBeforeSwitch();
+      renderStorageState();
+      route();
+      focusPage();
+      toast(hasUnsavedWork() ? 'Connected, but the last changes are still not saved.' : 'Connected again.', hasUnsavedWork() ? 'bad' : undefined);
       return;
     }
     await enterFolder();
   }
 
   async function pickFolder() {
+    if (S.mode === 'folder' && failedDocs.length) {
+      toast('Some changes could not be saved to the current folder yet. Connect it again, or stop using it, before choosing another.', 'bad');
+      return;
+    }
+    // the picker has to open on the click itself; while the person chooses, what is open is saved where the page saves now
+    var picking = Store.pickFolderHandle();
+    picking.catch(function () { /* handled where it is awaited */ });
     await settleBeforeSwitch();
+    var handle;
     try {
-      await Store.chooseFolder();
+      handle = await picking;
     } catch (e) {
       if (!(e && e.code === 'declined')) toast('The folder could not be used. ' + errorText(e), 'bad');
+      return;
+    }
+    if (hasUnsavedWork()) {
+      toast('The open document could not be saved, so the folder was not changed. Try again in a moment.', 'bad');
+      return;
+    }
+    try {
+      await Store.useDirectoryHandle(handle);
+    } catch (e) {
+      toast('The folder could not be used. ' + errorText(e), 'bad');
       return;
     }
     await enterFolder();
@@ -500,55 +559,61 @@
     S.folderGate = false;
     await loadData();
     renderStorageState();
-    if (S.loadError) { route(); return; }
+    if (S.loadError) { route(); focusPage(); return; }
     if (wasGate || S.view !== 'backup') showView('documents'); else route();
     focusPage();
-    if (S.absorbed && !S.absorbed.complete) return;   // its own message is already on screen
+    if (S.moveIncomplete) return;   // its own message is already on screen
     var moved = S.absorbed ? S.absorbed.moved : 0;
     toast(moved ? 'Connected. ' + moved + (moved === 1 ? ' record was' : ' records were') + ' moved from this browser into the folder.' : 'Connected to the folder.');
   }
 
   /**
    * With a folder connected, the folder is the one truth. Whatever this browser still holds on its own is moved in:
-   * a record the folder lacks, or a newer version of one it has. The browser's copy is emptied only when every
-   * write succeeded. Until then the leftovers stay there, are tried again on every read, and the screens say so.
+   * a record the folder lacks, or a newer version of one it has. The store drops a record from the browser's copy
+   * the moment it is written to the folder or deleted, so that copy only ever holds what is not safely in the folder
+   * yet. What could not be written stays there, is tried again on every read, and the screens say so.
    */
   async function absorbBrowserCopy() {
     var result = { moved: 0, complete: true, clashes: [] };
     if (S.mode !== 'folder') { S.moveIncomplete = 0; return result; }
     var held = Store.browserCopy();
     var heldSettings = held.settings || {};
-    if (!held.companies.length && !held.invoices.length && !Object.keys(heldSettings).length) { S.moveIncomplete = 0; return result; }
+    if (!held.companies.length && !held.invoices.length) {
+      S.moveIncomplete = 0;
+      if (Object.keys(heldSettings).length) Store.clearBrowserCopy();
+      return result;
+    }
     var jobs = [];
     var movedInvoices = [];
-    function merge(list, incoming, put, remember) {
+    function merge(collection, list, incoming, put, remember) {
       var at = Object.create(null);
       list.forEach(function (rec, i) { at[rec.id] = i; });
       incoming.forEach(function (rec) {
         var i = at[rec.id];
         if (i === undefined) { list.push(rec); at[rec.id] = list.length - 1; }
         else if (String(rec.updatedAt || '') > String(list[i].updatedAt || '')) list[i] = rec;   // the browser's version is the newer one
-        else return;
+        else { Store.dropFromBrowserCopy(collection, rec.id); return; }                          // the folder's is: nothing to move
         jobs.push(put(rec));
         if (remember) remember.push(rec);
       });
     }
-    merge(S.companies, held.companies.filter(function (c) { return c.kind === 'supplier' || c.kind === 'customer'; }).map(cleanCompany), Store.putCompany, null);
-    merge(S.invoices, held.invoices.map(C.normalizeInvoice), Store.putInvoice, movedInvoices);
+    held.companies.forEach(function (c) {
+      if (c.kind !== 'supplier' && c.kind !== 'customer') Store.dropFromBrowserCopy('companies', c.id);   // not a record this app can use
+    });
+    merge('companies', S.companies, held.companies.filter(function (c) { return c.kind === 'supplier' || c.kind === 'customer'; }).map(cleanCompany), Store.putCompany, null);
+    merge('invoices', S.invoices, held.invoices.map(C.normalizeInvoice), Store.putInvoice, movedInvoices);
     result.moved = jobs.length;
     var settingsChanged = false;
     Object.keys(heldSettings).forEach(function (k) {
       if (S.settings[k] === undefined) { S.settings[k] = heldSettings[k]; settingsChanged = true; }
     });
     if (settingsChanged) jobs.push(Store.putSettings(S.settings));
-    var outcomes = await Promise.all(jobs.map(function (job) {
-      return job.then(function () { return true; }, function () { return false; });
-    }));
-    var failedCount = outcomes.filter(function (fine) { return !fine; }).length;
-    result.complete = failedCount === 0;
-    S.moveIncomplete = failedCount;
+    await Promise.all(jobs.map(function (job) { return job.then(function () { return true; }, function () { return false; }); }));
+    var left = Store.browserCopyCount();
+    S.moveIncomplete = left;
+    result.complete = left === 0;
     if (result.complete) Store.clearBrowserCopy();
-    else toast(failedCount + (failedCount === 1 ? ' record is' : ' records are') + ' still only in this browser, because the folder could not be written. Open the Backup tab to try again.', 'bad');
+    else toast(left + (left === 1 ? ' record is' : ' records are') + ' still only in this browser, because the folder could not be written. Open the Backup tab to try again.', 'bad');
     // two documents of one company and one series must not share a number
     movedInvoices.forEach(function (d) {
       var number = String(d.number || '');
@@ -578,7 +643,7 @@
       renderStorageState();
       route();
       focusPage();
-      toast('The folder is no longer used.');
+      toast('The folder is no longer used. Its files were not touched and still hold your records: choose that folder again on the Backup tab to see them.', 'long');
       return;
     }
     var jobs = S.companies.map(function (c) { return Store.putCompany(c); })
@@ -606,7 +671,10 @@
       if (S.moveIncomplete) {
         sec.appendChild(h('div', { class: 'notice bad' },
           h('p', { text: S.moveIncomplete + (S.moveIncomplete === 1 ? ' record is' : ' records are') + ' still only in this browser, because the folder could not be written. Nothing is lost: they are shown here and kept in the browser until they are in the folder.' }),
-          button('Try again', async function () { await loadData(); route(); focusPage(); }, 'primary', { id: 'folder-retry-move' })));
+          button('Try again', reloadFromStore, 'primary', { id: 'folder-retry-move' })));
+      }
+      if (state.skipped.indexOf('settings.json') !== -1) {
+        sec.appendChild(h('p', { class: 'hint warn', text: 'settings.json in this folder is not one this app wrote, so it is left alone and small preferences (such as which company a new document starts with) are not remembered here.' }));
       }
       if (state.skipped.length) {
         sec.appendChild(h('div', { class: 'notice warn' }, h('p', {
@@ -619,13 +687,7 @@
       sec.appendChild(h('div', { class: 'row' },
         lostAccess ? button('Connect the folder', reconnectFolder, 'primary', { id: 'folder-reconnect' }) : null,
         button('Read the folder again', async function () {
-          await settleBeforeSwitch();
-          S.doc = null;
-          rememberOpen(null);
-          await loadData();
-          route();
-          focusPage();
-          if (!S.loadError) toast('Read again from the folder.');
+          if (await reloadFromStore()) toast('Read again from the folder.');
         }, '', { id: 'folder-reload' }),
         button('Choose another folder', pickFolder, '', { id: 'folder-choose' }),
         button('Stop using the folder', leaveFolder, 'quiet', { id: 'folder-leave' })));
@@ -642,7 +704,7 @@
   function renderLoadError() {
     var view = $('#view');
     view.textContent = '';
-    var actions = h('div', { class: 'row' }, button('Try again', async function () { await loadData(); route(); focusPage(); }, 'primary', { id: 'load-retry' }));
+    var actions = h('div', { class: 'row' }, button('Try again', reloadFromStore, 'primary', { id: 'load-retry' }));
     if (Store.folderState().configured) {
       // the data is in a folder that cannot be read just now: every way out is offered here, because no other tab is
       actions.appendChild(button('Connect the folder', reconnectFolder, '', { id: 'folder-reconnect' }));
@@ -931,7 +993,7 @@
     if (!sups.length) {
       page.appendChild(h('div', { class: 'panel empty' },
         h('strong', { text: 'Start with your own company' }),
-        h('span', { text: 'Its name, IČO, address and bank account are saved once and go on every document you issue. Customers are saved the same way, so the next invoice for the same company takes a few seconds.' + (S.mode === 'cloud' ? '' : ' Everything stays on this device; nothing is uploaded.') }),
+        h('span', { text: 'Its name, IČO, address and bank account are saved once and go on every document you issue. Customers are saved the same way, so the next invoice for the same company takes a few seconds.' + (S.mode === 'cloud' ? '' : ' Your data is kept on your own device and is not sent anywhere, except an IČO you ask to look up in ARES.') }),
         h('div', { class: 'row' },
           button('Add my company', function () { openCompanyDialog(C.newCompany('supplier'), { isNew: true, then: function (c) { newDocument(c); } }); }, 'primary'),
           button('See an example document', function () { leaveExample(); makeExample(); go('editor'); }))));
@@ -1160,7 +1222,7 @@
       body.appendChild(h('div', { class: 'notice', style: 'margin-top:16px' },
         h('p', null, h('strong', { text: 'This is an example for a made-up company. ' }), S.mode === 'cloud'
           ? 'Change anything to see the document follow. Nothing here is saved.'
-          : 'Change anything to see the document follow; nothing in it is saved. Once you add your own company, everything you enter stays on this device. Nothing is uploaded.'),
+          : 'Change anything to see the document follow; nothing in it is saved. Once you add your own company, what you enter is kept on your own device (in this browser, or in a folder you choose) and is not sent anywhere, except an IČO you ask to look up in the ARES register.'),
         button('Add my company', function () {
           openCompanyDialog(C.newCompany('supplier'), { isNew: true, then: function (c) { newDocument(c); } });
         }, 'primary')));

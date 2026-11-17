@@ -106,8 +106,9 @@ a { color: var(--accent); }
 .tab:active { transform: scale(.97); }
 .tab:active:not([aria-current="page"]) { color: var(--fg); background: color-mix(in srgb, var(--thumb) 55%, transparent); }
 .tab[aria-current="page"] { color: var(--fg); font-weight: 600; background: var(--thumb); box-shadow: var(--thumb-shadow); }
-.storage { margin-left: auto; font-size: 0.8125rem; color: var(--muted); display: flex; align-items: center; gap: 7px; }
-.theme-select { order: 3; width: auto; min-height: 1.875rem; padding: 2px 28px 2px 12px; border-radius: 999px; font-size: 0.8125rem; color: var(--muted); }
+.topbar-end { margin-left: auto; display: flex; align-items: center; justify-content: flex-end; gap: 8px 14px; flex-wrap: wrap; }
+.storage { font-size: 0.8125rem; color: var(--muted); display: flex; align-items: center; gap: 7px; }
+.theme-select { width: auto; min-height: 1.875rem; padding: 2px 28px 2px 12px; border-radius: 999px; font-size: 0.8125rem; color: var(--muted); }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); flex: none; }
 .dot.warn { background: var(--warn); }
 .dot.bad { background: var(--bad); }
@@ -389,12 +390,14 @@ try { var savedTheme = !window.claude && localStorage.getItem("invoice-workbench
       <a class="tab" id="tab-companies" href="#companies">Companies</a>
       <a class="tab" id="tab-backup" href="#backup">Backup</a>
     </nav>
-    <select id="theme-select" class="theme-select" aria-label="Appearance" hidden>
-      <option value="">Appearance: auto</option>
-      <option value="light">Appearance: light</option>
-      <option value="dark">Appearance: dark</option>
-    </select>
-    <div class="storage" id="storage-state"><span class="dot warn" aria-hidden="true"></span><span>Opening your saved data…</span></div>
+    <div class="topbar-end">
+      <div class="storage" id="storage-state"><span class="dot warn" aria-hidden="true"></span><span>Opening your saved data…</span></div>
+      <select id="theme-select" class="theme-select" aria-label="Appearance" hidden>
+        <option value="">Appearance: auto</option>
+        <option value="light">Appearance: light</option>
+        <option value="dark">Appearance: dark</option>
+      </select>
+    </div>
   </div>
 </header>
 

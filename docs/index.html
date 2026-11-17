@@ -8,8 +8,6 @@
 <title>Invoice Workbench</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='6' y='3' width='20' height='26' rx='5' fill='%230071e3'/%3E%3Cpath d='M11 11h10M11 16h10M11 21h10' stroke='white' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E">
 <style>:root{color-scheme:light;padding:env(safe-area-inset-top,0px) 0 env(safe-area-inset-bottom,0px)}body{margin:0;font:14px system-ui,sans-serif}img{max-width:100%}[hidden]{display:none!important}</style>
-</head>
-<body>
 <style>
 /* Workbench, in Apple's manner: one calm grey ground, white grouped cards, and the sheet of paper as the only heavy object.
    Chrome that floats over content is a translucent material; everything pressable answers the press at once. */
@@ -116,8 +114,9 @@ a { color: var(--accent); }
 .tab:active { transform: scale(.97); }
 .tab:active:not([aria-current="page"]) { color: var(--fg); background: color-mix(in srgb, var(--thumb) 55%, transparent); }
 .tab[aria-current="page"] { color: var(--fg); font-weight: 600; background: var(--thumb); box-shadow: var(--thumb-shadow); }
-.storage { margin-left: auto; font-size: 0.8125rem; color: var(--muted); display: flex; align-items: center; gap: 7px; }
-.theme-select { order: 3; width: auto; min-height: 1.875rem; padding: 2px 28px 2px 12px; border-radius: 999px; font-size: 0.8125rem; color: var(--muted); }
+.topbar-end { margin-left: auto; display: flex; align-items: center; justify-content: flex-end; gap: 8px 14px; flex-wrap: wrap; }
+.storage { font-size: 0.8125rem; color: var(--muted); display: flex; align-items: center; gap: 7px; }
+.theme-select { width: auto; min-height: 1.875rem; padding: 2px 28px 2px 12px; border-radius: 999px; font-size: 0.8125rem; color: var(--muted); }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); flex: none; }
 .dot.warn { background: var(--warn); }
 .dot.bad { background: var(--bad); }
@@ -385,6 +384,8 @@ dialog .toasts:empty { display: none; }
   input[type="text"], input[type="date"], input[type="email"], input[type="search"], select, textarea { border-color: var(--fg); }
 }
 </style>
+</head>
+<body>
 <script>
 /* The copy opened from disk can be told to stay light or dark. Applied here, before anything is drawn, so the page never flashes the other theme. Inside claude.ai the app around the page decides, and this does nothing. */
 try { var savedTheme = !window.claude && localStorage.getItem("invoice-workbench:theme"); if (savedTheme === "light" || savedTheme === "dark") document.documentElement.setAttribute("data-theme", savedTheme); } catch (e) {}
@@ -399,12 +400,14 @@ try { var savedTheme = !window.claude && localStorage.getItem("invoice-workbench
       <a class="tab" id="tab-companies" href="#companies">Companies</a>
       <a class="tab" id="tab-backup" href="#backup">Backup</a>
     </nav>
-    <select id="theme-select" class="theme-select" aria-label="Appearance" hidden>
-      <option value="">Appearance: auto</option>
-      <option value="light">Appearance: light</option>
-      <option value="dark">Appearance: dark</option>
-    </select>
-    <div class="storage" id="storage-state"><span class="dot warn" aria-hidden="true"></span><span>Opening your saved data…</span></div>
+    <div class="topbar-end">
+      <div class="storage" id="storage-state"><span class="dot warn" aria-hidden="true"></span><span>Opening your saved data…</span></div>
+      <select id="theme-select" class="theme-select" aria-label="Appearance" hidden>
+        <option value="">Appearance: auto</option>
+        <option value="light">Appearance: light</option>
+        <option value="dark">Appearance: dark</option>
+      </select>
+    </div>
   </div>
 </header>
 
