@@ -22,8 +22,15 @@ ISDOC does not say whether an invoice was paid, so the import asks how to read t
 
 ## Signing
 
-A Czech invoice needs no signature. If you want one on your documents, add a picture of it to your company, or
-draw it there with a mouse, a finger or a pen; it is printed where a stamp and signature go.
+**Any document.** The **Sign** tab opens a PDF, or a photo or scan of a page (JPG, PNG), and lets you put your
+signature, a date or a line of text anywhere on it: drag to move, pull the corner to resize, then download the
+signed copy. The file is opened, signed and saved in your browser and is not uploaded anywhere. A Word document
+has to be saved as PDF first. A signature placed this way is a simple electronic signature: fine for everyday
+agreements, orders and handover records, not for the cases where the law asks for a qualified or officially
+verified one.
+
+**Your invoices.** A Czech invoice needs no signature. If you want one on your documents, add a picture of it to
+your company, or draw it there with a mouse, a finger or a pen; it is printed where a stamp and signature go.
 
 ## Your data stays with you
 
@@ -54,6 +61,7 @@ Plain HTML, CSS and JavaScript, with no dependencies to install.
 | `store.js` | Where data is kept (browser storage, a folder, or a claude.ai Artifact database) |
 | `core.js` | The rules: VAT maths, numbering, IBAN, payment codes, formatting, the income overview |
 | `import.js` | Reads ISDOC invoices from other services: the XML, ZIP archives and PDFs they arrive in |
+| `sign.js` | The Sign tab: shows a PDF with pdf.js, writes the signed copy with pdf-lib (both loaded from cdnjs on first use) |
 | `render.js` | Page layout, the SVG preview and the PDF |
 | `i18n.js`, `i18n-extra.js` | What a document says in each language |
 | `fonts.js` | The embedded typeface |
@@ -65,9 +73,10 @@ node test/app-smoke.js       # drives the page in headless Chrome (macOS path to
 ```
 
 The other `test/*.js` scripts run the same way: `hosted-smoke.js`, `folder-smoke.js`, `folder-regress.js`,
-`review-regress.js`, `redesign-check.js`, `import-smoke.js`, `signature-check.js`.
+`review-regress.js`, `redesign-check.js`, `import-smoke.js`, `signature-check.js`, `overview-check.js`, `sign-check.js`.
 
 ## Credits
 
 The embedded typeface is Montserrat, © The Montserrat Project Authors, under the SIL Open Font License 1.1
-(`licenses/Montserrat-OFL.txt`). PDFs are made with jsPDF and QR codes with qrcode-generator, both loaded from cdnjs.
+(`licenses/Montserrat-OFL.txt`). PDFs are made with jsPDF and QR codes with qrcode-generator; the Sign tab uses
+pdf.js and pdf-lib. All four are loaded from cdnjs.

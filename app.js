@@ -299,7 +299,7 @@
   // ---------------------------------------------------------------- shell
 
   function setTab(view) {
-    ['overview', 'documents', 'editor', 'companies', 'backup'].forEach(function (v) {
+    ['overview', 'documents', 'editor', 'companies', 'sign', 'backup'].forEach(function (v) {
       var el = $('#tab-' + v);
       if (!el) return;
       if (v === view) {
@@ -424,7 +424,7 @@
 
   function route() {
     var view = (location.hash || '').replace(/^#/, '');
-    if (['overview', 'documents', 'editor', 'companies', 'backup'].indexOf(view) === -1) view = '';
+    if (['overview', 'documents', 'editor', 'companies', 'sign', 'backup'].indexOf(view) === -1) view = '';
     if (S.loadError) { setTab(view || 'documents'); renderLoadError(); return; }
     if (S.folderGate) { setTab(view || 'documents'); renderFolderGate(); return; }
     if (!view) view = suppliers().length ? 'documents' : 'editor';
@@ -437,6 +437,7 @@
       renderEditor();
     } else if (view === 'companies') renderCompanies();
     else if (view === 'overview') renderOverview();
+    else if (view === 'sign') renderSign();
     else if (view === 'backup') renderBackup();
     else renderDocuments();
     // the new screen fades in over the old ground: a cross-fade, never a slide
@@ -2269,6 +2270,12 @@
 
   // ------------------------------------------------------ company dialog
 
+  function seeThrough(ctx, w, hgt) {
+    var d = ctx.getImageData(0, 0, w, hgt).data;
+    for (var i = 3; i < d.length; i += 4) if (d[i] < 250) return true;
+    return false;
+  }
+
   function readImage(file, maxW, maxH) {
     return new Promise(function (resolve, reject) {
       if (!file || !/^image\//.test(file.type)) { reject(new Error('Choose a picture: PNG, JPG, GIF, WebP or SVG.')); return; }
@@ -2289,7 +2296,9 @@
             var ctx = canvas.getContext('2d');
             ctx.drawImage(img, 0, 0, cw, ch);
             var src = canvas.toDataURL('image/png');
-            if (src.length > MAX_IMAGE_CHARS) {
+            // a picture with see-through parts stays one, however small it has to get: flattened onto white it
+            // would print as a white box over whatever it is placed on
+            if (src.length > MAX_IMAGE_CHARS && !seeThrough(ctx, cw, ch)) {
               // a photo: flatten onto white and keep it as a JPEG
               ctx.globalCompositeOperation = 'destination-over';
               ctx.fillStyle = '#ffffff';
@@ -2698,6 +2707,32 @@
       toast('Imported ' + companies.length + ' companies and ' + invoices.length + ' documents.');
     }, function (e) { toast('Part of the backup was not saved. ' + errorText(e), 'bad'); });
     renderBackup();
+  }
+
+  // ----------------------------------------------------------------- sign
+
+  /** Signing any PDF or picture is a screen of its own (sign.js); the app lends it its parts and the saved signatures. */
+  function renderSign() {
+    var view = $('#view');
+    if (!window.InvoiceSign) {
+      view.textContent = '';
+      view.appendChild(h('div', { class: 'wrap page' }, h('div', { class: 'notice bad' }, h('p', { text: 'This screen did not load. Reload the page.' }))));
+      return;
+    }
+    window.InvoiceSign.render(view, {
+      h: h, button: button, toast: toast, errorText: errorText, saveFile: saveFile, signaturePad: signaturePad, readImage: readImage,
+      // the screen draws itself only while it is the one on show: a file can finish opening after the person has moved on
+      isCurrent: function () { return S.view === 'sign' && !S.loadError && !S.folderGate; },
+      companySignatures: function () {
+        return suppliers().filter(function (c) { return c.stamp && c.stamp.src; }).map(function (c) { return { name: c.name || 'Unnamed company', picture: c.stamp }; });
+      },
+      // the signature last used here is kept with the settings, so it is there on the next visit
+      getSignature: function () { return C.normalizeImage(S.settings.signature); },
+      setSignature: function (img) {
+        S.settings.signature = img;
+        Store.putSettings(S.settings).catch(function () { /* a convenience only */ });
+      }
+    });
   }
 
   // ------------------------------------------------- import from a service

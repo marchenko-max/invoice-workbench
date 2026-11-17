@@ -10,7 +10,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const root = path.resolve(__dirname, '..');
-const SCRIPTS = ['fonts.js', 'core.js', 'import.js', 'i18n.js', 'i18n-extra.js', 'render.js', 'store.js', 'app.js'];
+const SCRIPTS = ['fonts.js', 'core.js', 'import.js', 'i18n.js', 'i18n-extra.js', 'render.js', 'store.js', 'sign.js', 'app.js'];
 const RESET = ':root{color-scheme:light;padding:env(safe-area-inset-top,0px) 0 env(safe-area-inset-bottom,0px)}body{margin:0;font:14px system-ui,sans-serif}img{max-width:100%}[hidden]{display:none!important}';
 const page = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
 

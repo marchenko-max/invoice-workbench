@@ -143,7 +143,7 @@ const SEED = `(function(){
       const fits = await b.eval('(function(){var s=document.querySelector("#income-chart svg").getBoundingClientRect();var c=document.querySelector("#income-chart").getBoundingClientRect();return s.width<=c.width+1})()');
       ok(fits === true, 'the chart was redrawn to the new width at ' + w + ' px');
       const tabs = await b.eval('(function(){var t=[].slice.call(document.querySelectorAll(".tabs .tab"));var strip=document.querySelector(".tabs").getBoundingClientRect();var cur=document.querySelector(".tab[aria-current=page]").getBoundingClientRect();return {rows:t.map(function(x){return Math.round(x.getBoundingClientRect().top)}).filter(function(v,i,a){return a.indexOf(v)===i}).length,count:t.length,curIn:cur.left>=strip.left-1&&cur.right<=strip.right+1,bar:Math.round(document.querySelector(".topbar").getBoundingClientRect().height)}})()');
-      ok(tabs.count === 5 && tabs.rows === 1, 'the five tabs are one row at ' + w + ' px', tabs);
+      ok(tabs.count === 6 && tabs.rows === 1, 'the six tabs are one row at ' + w + ' px', tabs);
       ok(tabs.curIn === true, 'and the current tab is in view', tabs);
       const whole = await b.eval('(function(){var bad=[];[].forEach.call(document.querySelectorAll(".hero .value, .tile .value"),function(el){var r=document.createRange();r.selectNodeContents(el);if(r.getClientRects().length>1)bad.push(el.textContent)});return bad})()');
       ok(whole.length === 0, 'no figure is broken across lines at ' + w + ' px', whole);

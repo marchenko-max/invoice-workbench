@@ -375,6 +375,49 @@ details.more[open] > summary { margin-bottom: 10px; }
   .tile .value { font-size: 1rem; }
 }
 
+/* signing a document: its pages as they are, and in front of them what was placed */
+.sign-doc { display: flex; flex-direction: column; align-items: center; gap: 18px; }
+.sign-sheet { width: 100%; max-width: 880px; display: flex; flex-direction: column; gap: 6px; }
+.sign-page { position: relative; width: 100%; background: #ffffff; box-shadow: var(--paper-shadow); }
+.sign-page canvas { display: block; width: 100%; height: 100%; }
+.sign-layer { position: absolute; inset: 0; }
+.sign-item { position: absolute; touch-action: none; cursor: grab; border-radius: 2px; outline: 1.5px dashed transparent; outline-offset: 3px; -webkit-user-select: none; user-select: none; }
+.sign-item.moving { cursor: grabbing; }
+.sign-item img { display: block; width: 100%; height: 100%; pointer-events: none; -webkit-user-drag: none; }
+.sign-item:hover, .sign-item:focus, .sign-item:focus-within, .sign-item.moving { outline-color: var(--accent-fill); }
+.sign-item:focus { outline-style: solid; }
+/* until the thing is pointed at or holds the keyboard its handles are neither seen nor pressed */
+.sign-remove, .sign-grip { position: absolute; opacity: 0; pointer-events: none; transition: opacity .12s ease-out; }
+.sign-item:hover .sign-remove, .sign-item:focus .sign-remove, .sign-item:focus-within .sign-remove,
+.sign-item:hover .sign-grip, .sign-item:focus .sign-grip, .sign-item:focus-within .sign-grip { opacity: 1; pointer-events: auto; }
+.sign-remove { top: -15px; left: -15px; width: 26px; height: 26px; border: 0; border-radius: 50%; padding: 0; background: var(--bad); color: #ffffff; font: 600 16px/1 system-ui, sans-serif; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+.sign-grip { right: -9px; bottom: -9px; width: 16px; height: 16px; border-radius: 50%; background: var(--accent-fill); box-shadow: 0 0 0 2px #ffffff; cursor: nwse-resize; }
+#sign-drop.over { outline: 2px dashed var(--accent-fill); outline-offset: -6px; }
+.sign-tools { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 20; }
+.sign-tools::before { content: ""; position: absolute; inset: 0; z-index: -1; background: var(--material); -webkit-backdrop-filter: saturate(180%) blur(20px); backdrop-filter: saturate(180%) blur(20px); border-bottom: 1px solid var(--material-edge); }
+.sign-tools .wrap { display: flex; align-items: center; gap: 8px 12px; flex-wrap: wrap; padding-block: 10px; }
+.sign-top { padding-bottom: 8px; }
+.sign-textrow { display: inline-flex; gap: 8px; align-items: center; min-width: 0; }
+.sign-textrow input { width: 13rem; min-width: 0; }
+#sign-download .short { display: none; }
+@media (max-width: 560px) {
+  /* two rows at most: the three actions, then the line of text */
+  .sign-tools .wrap { gap: 8px; }
+  .sign-tools .btn { padding-inline: 12px; font-size: 0.8125rem; }
+  .sign-tools .spacer { display: none; }
+  .sign-textrow { order: 5; flex: 1 1 100%; }
+  #sign-download .long { display: none; }
+  #sign-download .short { display: inline; }
+  .sign-textrow input { flex: 1 1 auto; width: auto; }
+}
+@media (prefers-reduced-transparency: reduce) { .sign-tools::before { background: var(--bg); -webkit-backdrop-filter: none; backdrop-filter: none; border-bottom-color: var(--line); } }
+@media (prefers-contrast: more) { .sign-tools::before { background: var(--bg); -webkit-backdrop-filter: none; backdrop-filter: none; border-bottom-color: var(--fg); } }
+@media (pointer: coarse) {
+  .sign-remove { width: 36px; height: 36px; top: -22px; left: -22px; }
+  .sign-grip { width: 28px; height: 28px; right: -16px; bottom: -16px; }
+}
+@media (prefers-reduced-motion: reduce) { .sign-remove, .sign-grip { transition: none; } }
+
 /* import from another service: where to find the export, then what was found */
 .howto { margin: 0; padding-left: 1.25em; display: flex; flex-direction: column; gap: 4px; color: var(--muted); max-width: 80ch; }
 .howto b { color: var(--fg); font-weight: 600; }
@@ -460,6 +503,7 @@ try { var savedTheme = !window.claude && localStorage.getItem("invoice-workbench
       <a class="tab" id="tab-documents" href="#documents">Documents</a>
       <a class="tab" id="tab-editor" href="#editor">Editor</a>
       <a class="tab" id="tab-companies" href="#companies">Companies</a>
+      <a class="tab" id="tab-sign" href="#sign">Sign</a>
       <a class="tab" id="tab-backup" href="#backup">Backup</a>
     </nav>
     <div class="topbar-end">
@@ -495,6 +539,7 @@ try { var savedTheme = !window.claude && localStorage.getItem("invoice-workbench
 <script src="i18n-extra.js"></script>
 <script src="render.js"></script>
 <script src="store.js"></script>
+<script src="sign.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
