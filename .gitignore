@@ -1,0 +1,8 @@
+# built for local use and for the tests; the website is docs/
+dist/
+# test output and browser profiles
+test/out/
+test/.chrome-*
+# working notes
+SPEC.md
+.DS_Store
