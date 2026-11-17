@@ -10,6 +10,7 @@
   var C = window.InvoiceCore;
   var I18N = window.InvoiceI18n;
   var Store = window.InvoiceStore;
+  var Import = window.InvoiceImport;
   function renderer() { return window.InvoiceRender || null; }
 
   // how the app's own screens write numbers and dates (the documents follow their own language)
@@ -56,6 +57,7 @@
     dirty: false,
     pane: 'edit',
     filters: { q: '', supplier: '', status: '' },
+    overview: { granularity: 'month', measure: 'issued', currency: '', supplier: '' },
     newFor: '',
     folderGate: false,  // a folder is chosen but the browser has not let us into it yet: show nothing, save nothing
     moveIncomplete: 0,  // records that could not be written into the folder yet and are still only in this browser
@@ -297,10 +299,13 @@
   // ---------------------------------------------------------------- shell
 
   function setTab(view) {
-    ['documents', 'editor', 'companies', 'backup'].forEach(function (v) {
+    ['overview', 'documents', 'editor', 'companies', 'backup'].forEach(function (v) {
       var el = $('#tab-' + v);
       if (!el) return;
-      if (v === view) el.setAttribute('aria-current', 'page'); else el.removeAttribute('aria-current');
+      if (v === view) {
+        el.setAttribute('aria-current', 'page');
+        revealTab(el);
+      } else el.removeAttribute('aria-current');
     });
   }
 
@@ -385,6 +390,14 @@
       var t = e.target && e.target.closest ? e.target.closest('button[id], a[id]') : null;
       lastPressedId = t ? t.id : '';
     }, true);
+    // the keyboard on a tab that is scrolled out of the strip brings it in
+    var strip = $('.tabs');
+    if (strip) strip.addEventListener('focusin', function (e) { if (e.target && e.target.classList.contains('tab')) revealTab(e.target); });
+    // a choice made in a list redraws the screen too, with a keyboard as with a pointer
+    document.addEventListener('change', function (e) {
+      var t = e.target;
+      if (t && t.tagName === 'SELECT' && t.id) lastPressedId = t.id;
+    }, true);
     Store.onStatus(function (st) {
       storeStatus = st;
       // with a folder connected, what the browser still holds on its own shrinks as records reach the folder
@@ -411,7 +424,7 @@
 
   function route() {
     var view = (location.hash || '').replace(/^#/, '');
-    if (['documents', 'editor', 'companies', 'backup'].indexOf(view) === -1) view = '';
+    if (['overview', 'documents', 'editor', 'companies', 'backup'].indexOf(view) === -1) view = '';
     if (S.loadError) { setTab(view || 'documents'); renderLoadError(); return; }
     if (S.folderGate) { setTab(view || 'documents'); renderFolderGate(); return; }
     if (!view) view = suppliers().length ? 'documents' : 'editor';
@@ -423,6 +436,7 @@
       if (!S.doc) restoreOpenDocument();
       renderEditor();
     } else if (view === 'companies') renderCompanies();
+    else if (view === 'overview') renderOverview();
     else if (view === 'backup') renderBackup();
     else renderDocuments();
     // the new screen fades in over the old ground: a cross-fade, never a slide
@@ -437,6 +451,12 @@
   }
 
   // ------------------------------------------------------------- the folder
+
+  /** On a phone the tabs are one row that scrolls sideways: brings a tab into it. */
+  function revealTab(el) {
+    var strip = el.parentNode;
+    if (strip && strip.scrollWidth > strip.clientWidth) strip.scrollLeft = el.offsetLeft - strip.offsetLeft - (strip.clientWidth - el.offsetWidth) / 2;
+  }
 
   /** After a press redrew the screen, the keyboard goes to the same control if it is still there, else to the heading. */
   function focusPage() {
@@ -996,7 +1016,8 @@
         h('span', { text: 'Its name, IČO, address and bank account are saved once and go on every document you issue. Customers are saved the same way, so the next invoice for the same company takes a few seconds.' + (S.mode === 'cloud' ? '' : ' Your data is kept on your own device and is not sent anywhere, except an IČO you ask to look up in ARES.') }),
         h('div', { class: 'row' },
           button('Add my company', function () { openCompanyDialog(C.newCompany('supplier'), { isNew: true, then: function (c) { newDocument(c); } }); }, 'primary'),
-          button('See an example document', function () { leaveExample(); makeExample(); go('editor'); }))));
+          button('See an example document', function () { leaveExample(); makeExample(); go('editor'); })),
+        h('span', null, 'Moving from FakturaOnline or Fakturoid? ', h('a', { href: '#backup', id: 'docs-import-link', text: 'Bring your invoices with you' }), ': your company and customers come with them.')));
       return;
     }
 
@@ -1057,7 +1078,8 @@
       if (!rows.length) {
         panel.appendChild(h('div', { class: 'empty' },
           h('strong', { text: S.invoices.length ? 'No document matches' : 'No documents yet' }),
-          h('span', { text: S.invoices.length ? 'Clear the search or the filters to see them all.' : 'Issue the first one with New document. It is saved as you type and listed here.' })));
+          h('span', { text: S.invoices.length ? 'Clear the search or the filters to see them all.' : 'Issue the first one with New document. It is saved as you type and listed here.' }),
+          S.invoices.length ? null : h('span', null, 'Moving from FakturaOnline or Fakturoid? ', h('a', { href: '#backup', id: 'docs-import-link', text: 'Bring your invoices with you' }), '.')));
         return;
       }
       var multi = sups.length > 1;
@@ -1770,6 +1792,7 @@
     drawSwatches();
     grid.appendChild(h('div', { class: 'field c12' }, h('span', { class: 'label', text: 'Accent colour' }), swatches));
 
+    grid.appendChild(h('div', { class: 'c12' }, bindCheck(doc, 'showSignature', 'f-signature', 'Print an empty line for a stamp and signature', { hint: '(not required on an invoice; an uploaded stamp is printed either way)' })));
     grid.appendChild(field('Register entry printed under the supplier', bindText(doc, 'registerNote', 'f-register', { multiline: true, rows: 2, placeholder: 'For example where the company is registered' }), { cls: 'c12' }));
 
     if (!S.example && company) {
@@ -1928,6 +1951,260 @@
     }
   }
 
+  // ------------------------------------------------------------- overview
+
+  var SVG_NS = 'http://www.w3.org/2000/svg';
+  var chartWatcher = null;
+
+  function svg(tag, attrs, text) {
+    var el = document.createElementNS(SVG_NS, tag);
+    if (attrs) Object.keys(attrs).forEach(function (k) { if (attrs[k] != null) el.setAttribute(k, String(attrs[k])); });
+    if (text != null) el.textContent = text;
+    return el;
+  }
+
+  function periodName(key, granularity) {
+    if (granularity === 'year') return key;
+    if (granularity === 'quarter') return 'Q' + key.slice(6) + ' ' + key.slice(0, 4);
+    return UI.months[Number(key.slice(5, 7)) - 1] + ' ' + key.slice(0, 4);
+  }
+
+  /** 1 250 000 -> "1.25M", 50 000 -> "50K": for the axis and the one label on the chart, never for a figure someone copies. */
+  function compactNumber(value) {
+    var a = Math.abs(value);
+    var trim = function (n) { return String(Math.round(n * 100) / 100); };
+    if (a >= 1e6) return trim(value / 1e6) + 'M';
+    if (a >= 1e3) return trim(value / 1e3) + 'K';
+    return trim(value);
+  }
+
+  /** A round step that gives about `target` ticks: 1, 2, 2.5 or 5 times a power of ten. */
+  function niceStep(span, target) {
+    var raw = span / target;
+    if (!(raw > 0)) return 1;
+    var pow = Math.pow(10, Math.floor(Math.log10(raw)));
+    var n = raw / pow;
+    return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 2.5 ? 2.5 : n <= 5 ? 5 : 10) * pow;
+  }
+
+  /** Columns from one baseline, one per period. Every figure it shows is also in the table under it. */
+  function drawIncomeChart(host, o) {
+    host.textContent = '';
+    host.dataset.measure = o.measure;
+    var W = Math.max(280, Math.round(host.clientWidth || 720));
+    var H = 260;
+    var padL = 44, padR = 6, padT = 20, padB = 36;
+    var plotW = W - padL - padR, plotH = H - padT - padB;
+    var values = o.periods.map(function (p) { return p.amount / 100; });
+    var maxV = Math.max.apply(null, values.concat([0]));
+    var minV = Math.min.apply(null, values.concat([0]));
+    var step = Math.max(1, niceStep(Math.max(maxV - minV, 1), 4));    // whole units: an axis of 0, 0.25, 0.5 reads as 0, 0, 1
+    if (step < 10 && step !== Math.round(step)) step = Math.ceil(step / 5) * 5;                 // and never 2.5, read as 3, 5, 8
+    var top = Math.max(step, Math.ceil(maxV / step) * step);
+    var bottom = Math.floor(minV / step) * step;
+    var y = function (v) { return padT + plotH * (top - v) / (top - bottom); };
+    var compactAxis = Math.max(Math.abs(top), Math.abs(bottom)) >= 10000;
+    var tickText = function (v) { return compactAxis ? compactNumber(v) : C.formatScaled(Math.round(v), 0, 0, 0, UI); };
+
+    var root = svg('svg', { viewBox: '0 0 ' + W + ' ' + H, width: W, height: H, role: 'group',
+      'aria-label': (o.measure === 'paid' ? 'Received' : 'Invoiced') + ' per ' + o.granularity + ' in ' + o.currency });
+    for (var t = bottom; t <= top + step / 2; t += step) {
+      var gy = Math.round(y(t)) + 0.5;
+      root.appendChild(svg('line', { class: Math.abs(t) < step / 1e6 ? 'axis' : 'grid', x1: padL, x2: W - padR, y1: gy, y2: gy }));
+      root.appendChild(svg('text', { class: 'tick', x: padL - 8, y: gy + 4, 'text-anchor': 'end' }, tickText(t)));
+    }
+
+    var n = o.periods.length;
+    var band = plotW / n;
+    var barW = Math.max(4, Math.min(24, band - 6));
+    var every = Math.max(1, Math.ceil(30 / band));           // show every label that has room
+    var peak = -1;
+    values.forEach(function (v, i) { if (v > 0 && (peak === -1 || v > values[peak])) peak = i; });
+
+    var tip = h('div', { class: 'chart-tip', hidden: true });
+    function show(i, cx, cy) {
+      var p = o.periods[i];
+      tip.textContent = '';
+      tip.appendChild(h('strong', { text: money(p.amount, o.currency) }));
+      tip.appendChild(document.createTextNode(periodName(p.key, o.granularity) + ', ' + p.count + (p.count === 1 ? ' document' : ' documents')));
+      tip.hidden = false;
+      var scale = (host.clientWidth || W) / W;
+      var half = tip.offsetWidth / 2;
+      tip.style.left = Math.max(half + 2, Math.min((host.clientWidth || W) - half - 2, cx * scale)) + 'px';
+      tip.style.top = Math.max(tip.offsetHeight + 2, cy * scale - 8) + 'px';
+    }
+
+    o.periods.forEach(function (p, i) {
+      var v = values[i];
+      var x0 = padL + band * i;
+      var bx = x0 + (band - barW) / 2;
+      var y0 = y(0), y1 = y(v);
+      var col = svg('g', { class: 'col', tabindex: 0, role: 'img',
+        'aria-label': periodName(p.key, o.granularity) + ': ' + money(p.amount, o.currency) + ', ' + p.count + (p.count === 1 ? ' document' : ' documents') });
+      col.appendChild(svg('rect', { class: 'hit', x: x0 + 1, y: padT, width: Math.max(1, band - 2), height: plotH, rx: 4 }));
+      if (v !== 0) {
+        var height = Math.abs(y1 - y0);
+        var r = Math.min(4, height, barW / 2);
+        // rounded at the data end, square on the baseline
+        var d = v > 0
+          ? 'M' + bx + ',' + y0 + 'V' + (y1 + r) + 'Q' + bx + ',' + y1 + ' ' + (bx + r) + ',' + y1 + 'H' + (bx + barW - r) + 'Q' + (bx + barW) + ',' + y1 + ' ' + (bx + barW) + ',' + (y1 + r) + 'V' + y0 + 'Z'
+          : 'M' + bx + ',' + y0 + 'V' + (y1 - r) + 'Q' + bx + ',' + y1 + ' ' + (bx + r) + ',' + y1 + 'H' + (bx + barW - r) + 'Q' + (bx + barW) + ',' + y1 + ' ' + (bx + barW) + ',' + (y1 - r) + 'V' + y0 + 'Z';
+        col.appendChild(svg('path', { class: 'bar', d: d }));
+      }
+      var cx = x0 + band / 2;
+      var on = function () { show(i, cx, Math.min(y0, y1)); };
+      var off = function () { tip.hidden = true; };
+      col.addEventListener('pointerenter', on);
+      col.addEventListener('pointerleave', off);
+      col.addEventListener('focus', on);
+      col.addEventListener('blur', off);
+      root.appendChild(col);
+
+      // only the tallest column carries its value; the axis, the hover and the table carry the rest
+      if (i === peak) root.appendChild(svg('text', { class: 'cap', x: Math.max(padL + 14, Math.min(W - padR - 14, cx)), y: y1 - 6, 'text-anchor': 'middle' }, compactNumber(v)));
+
+      var last = i === n - 1;
+      if (last || (n - 1 - i) % every === 0) {
+        var label = o.granularity === 'year' ? p.key : o.granularity === 'quarter' ? 'Q' + p.key.slice(6) : UI.months[Number(p.key.slice(5, 7)) - 1];
+        root.appendChild(svg('text', { class: 'tick' + (last ? ' now' : ''), x: cx, y: H - padB + 16, 'text-anchor': 'middle' }, label));
+        // the year under the first label and under each January or first quarter, so the months can be told apart
+        var startsYear = o.granularity === 'month' ? p.key.slice(5, 7) === '01' : o.granularity === 'quarter' ? p.key.slice(6) === '1' : false;
+        if (o.granularity !== 'year' && (startsYear || i === (n - 1) % every)) {
+          root.appendChild(svg('text', { class: 'tick', x: cx, y: H - padB + 30, 'text-anchor': 'middle' }, p.key.slice(0, 4)));
+        }
+      }
+    });
+    host.appendChild(root);
+    host.appendChild(tip);
+  }
+
+  function renderOverview() {
+    var view = $('#view');
+    view.textContent = '';
+    if (chartWatcher) { chartWatcher.disconnect(); chartWatcher = null; }
+    var page = h('div', { class: 'wrap page' });
+    view.appendChild(page);
+    var sups = suppliers();
+    var f = S.overview;
+    if (f.supplier && !companyById(f.supplier)) f.supplier = '';
+    // f.currency is only what the person picked: with nothing picked, the currency follows what is on screen
+    var o = C.overview(S.invoices, { today: today(), granularity: f.granularity, measure: f.measure, currency: f.currency, supplierId: f.supplier });
+    if (f.currency && f.currency !== o.currency) f.currency = '';
+
+    page.appendChild(h('div', { class: 'page-head' }, h('h1', { text: 'Overview' })));
+    if (S.truncated) page.appendChild(truncatedNotice());
+
+    if (!S.invoices.some(C.countsAsIncome)) {
+      page.appendChild(h('div', { class: 'panel empty' },
+        h('strong', { text: 'Your income, month by month, will be drawn here' }),
+        h('span', { text: 'As soon as you issue invoices, this page adds them up: what you invoiced and what was paid, by month, quarter and year, and which customers it came from.' }),
+        h('div', { class: 'row' }, button('New document', function () { startNewDocument(); }, 'primary'))));
+      return;
+    }
+
+    // one row of filters, and everything under it follows them
+    var filters = h('div', { class: 'filters' });
+    var seg = function (label, options, current, pick) {
+      var el = h('div', { class: 'seg', role: 'group', 'aria-label': label });
+      options.forEach(function (opt) {
+        el.appendChild(h('button', { type: 'button', id: 'ov-' + opt[0], 'aria-pressed': String(current === opt[0]), text: opt[1], onclick: function () { pick(opt[0]); renderOverview(); focusPage(); } }));
+      });
+      return el;
+    };
+    filters.appendChild(seg('What to add up', [['issued', 'Invoiced'], ['paid', 'Received']], f.measure, function (v) { f.measure = v; }));
+    filters.appendChild(seg('Period', [['month', 'Months'], ['quarter', 'Quarters'], ['year', 'Years']], f.granularity, function (v) { f.granularity = v; }));
+    if (sups.length > 1) {
+      var bySupplier = h('select', { id: 'ov-supplier', 'aria-label': 'Company' },
+        [h('option', { value: '', text: 'All my companies' })].concat(sups.map(function (c) { return h('option', { value: c.id, text: c.name || 'Unnamed company' }); })));
+      bySupplier.value = f.supplier;
+      bySupplier.addEventListener('change', function () { f.supplier = bySupplier.value; f.currency = ''; renderOverview(); focusPage(); });
+      filters.appendChild(bySupplier);
+    }
+    if (o.currencies.length > 1) {
+      var byCurrency = h('select', { id: 'ov-currency', 'aria-label': 'Currency' }, o.currencies.map(function (c) { return h('option', { value: c, text: c }); }));
+      byCurrency.value = o.currency;
+      byCurrency.addEventListener('change', function () { f.currency = byCurrency.value; renderOverview(); focusPage(); });
+      filters.appendChild(byCurrency);
+    }
+    page.appendChild(filters);
+
+    var first = o.periods[0], lastP = o.periods[o.periods.length - 1];
+    var span = periodName(first.key, o.granularity) + ' to ' + periodName(lastP.key, o.granularity);
+    var sub = o.total.count + (o.total.count === 1 ? ' document' : ' documents');
+    if (o.total.vat !== 0) sub += ', ' + money(o.total.net, o.currency) + ' without VAT';
+
+    var chartHost = h('div', { class: 'chart', id: 'income-chart' });
+    var tableRows = o.periods.slice().reverse().map(function (p) {
+      return h('tr', null,
+        h('td', { text: periodName(p.key, o.granularity) }),
+        h('td', { class: 'r num', text: money(p.amount, o.currency) }),
+        h('td', { class: 'r num', text: String(p.count) }));
+    });
+    page.appendChild(h('section', { class: 'section' },
+      h('div', { class: 'hero' },
+        h('span', { class: 'label', text: (o.measure === 'paid' ? 'Received, ' : 'Invoiced, ') + span }),
+        h('span', { class: 'value', id: 'ov-total', text: money(o.total.amount, o.currency) }),
+        h('span', { class: 'sub', text: sub })),
+      chartHost,
+      h('details', { class: 'more' }, h('summary', { text: 'Show the numbers as a table' }),
+        h('div', { class: 'table-scroll' }, h('table', { class: 'ledger', id: 'ov-table' },
+          h('thead', null, h('tr', null, h('th', { text: 'Period' }), h('th', { class: 'r', text: o.measure === 'paid' ? 'Received' : 'Invoiced' }), h('th', { class: 'r', text: 'Documents' }))),
+          h('tbody', null, tableRows))))));
+
+    var tile = function (id, chip, chipClass, part) {
+      return h('div', { class: 'tile', id: 'ov-' + id },
+        h('span', { class: 'chip ' + chipClass, text: chip }),
+        h('span', { class: 'value num', text: money(part.amount, o.currency) }),
+        h('span', { class: 'count', text: part.count + (part.count === 1 ? ' document' : ' documents') }));
+    };
+    page.appendChild(h('section', { class: 'section' },
+      h('header', null, h('h2', { text: 'Where the documents issued in these ' + o.granularity + 's stand' })),
+      h('div', { class: 'tiles' },
+        tile('paid', 'Paid', 'paid', o.statuses.paid),
+        tile('waiting', 'Waiting to be paid', 'issued', o.statuses.waiting),
+        tile('overdue', 'Overdue', 'overdue', o.statuses.overdue),
+        tile('draft', 'Drafts', 'draft', o.statuses.draft))));
+
+    if (o.customers.length) {
+      var best = Math.max.apply(null, o.customers.map(function (c) { return Math.abs(c.amount); }).concat([1]));
+      // six, and the rest in one row; a "rest" of one customer is just that customer
+      var cut = o.customers.length <= 7 ? 7 : 6;
+      var shown = o.customers.slice(0, cut);
+      var rest = o.customers.slice(cut);
+      var rows = shown.map(function (c) {
+        var bar = h('div', { class: 'meter', 'aria-hidden': 'true' }, h('span', { style: 'width:' + Math.max(0, Math.round(100 * c.amount / best)) + '%' }));
+        return h('tr', null,
+          h('td', { class: 'wide' }, h('div', { class: 'title', text: c.name || 'No customer name' }), bar),
+          h('td', { class: 'r num', 'data-label': 'Documents', text: String(c.count) }),
+          h('td', { class: 'r num', text: money(c.amount, o.currency) }));
+      });
+      if (rest.length) {
+        rows.push(h('tr', null,
+          h('td', { class: 'wide muted', text: rest.length + (rest.length === 1 ? ' more customer' : ' more customers') }),
+          h('td', { class: 'r num', 'data-label': 'Documents', text: String(rest.reduce(function (s, c) { return s + c.count; }, 0)) }),
+          h('td', { class: 'r num', text: money(rest.reduce(function (s, c) { return s + c.amount; }, 0), o.currency) })));
+      }
+      page.appendChild(h('section', { class: 'section' },
+        h('header', null, h('h2', { text: 'Who it came from' })),
+        h('div', { class: 'table-scroll' }, h('table', { class: 'ledger', id: 'ov-customers', 'data-measure': o.measure },
+          h('thead', null, h('tr', null, h('th', { text: 'Customer' }), h('th', { class: 'r', text: 'Documents' }), h('th', { class: 'r', text: o.measure === 'paid' ? 'Received' : 'Invoiced' }))),
+          h('tbody', null, rows)))));
+    }
+
+    page.appendChild(h('p', { class: 'overview-foot', text: 'Invoices, advance invoices and corrective documents are added up by the amount to pay, VAT included. Quotations and proformas are left out, and a draft counts only among the drafts. \u201cReceived\u201d places a paid document in the period it was marked as paid.' + (o.currencies.length > 1 ? ' Currencies are never added together: this page shows ' + o.currency + '.' : '') }));
+
+    drawIncomeChart(chartHost, o);
+    if (typeof ResizeObserver === 'function') {
+      var width = chartHost.clientWidth;
+      chartWatcher = new ResizeObserver(function () {
+        if (!chartHost.isConnected || chartHost.clientWidth === width) return;
+        width = chartHost.clientWidth;
+        drawIncomeChart(chartHost, o);
+      });
+      chartWatcher.observe(chartHost);
+    }
+  }
+
   // ------------------------------------------------------------ companies
 
   function renderCompanies() {
@@ -2030,7 +2307,116 @@
     });
   }
 
-  function imageSlot(work, key, label, maxW, maxH) {
+  /**
+   * A place to sign with a mouse, a finger or a pen. `done` gets { src, w, h }: the ink alone on nothing, cut to
+   * its own size, so it prints over the paper the way a pen would. Nothing is drawn until the pointer is down, and
+   * the first dot appears with the press, not with the first movement.
+   */
+  function signaturePad(maxW, maxH, done, cancel) {
+    var W = 1200, H = 440, INK = '#14213d';
+    var canvas = h('canvas', { class: 'sign-pad', id: 'sign-pad', width: W, height: H, tabindex: 0, role: 'img', 'aria-label': 'Sign here with a mouse, a finger or a pen' });
+    var ctx = canvas.getContext('2d');
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.strokeStyle = INK;
+    ctx.fillStyle = INK;
+    var active = null, last = null, mid = null;
+    var use = button('Use this signature', function () {
+      var img = inkOnly();
+      if (img) done(img);
+    }, 'primary small', { id: 'sign-use', disabled: true });
+
+    function at(e) {
+      var r = canvas.getBoundingClientRect();
+      return { x: (e.clientX - r.left) * W / (r.width || W), y: (e.clientY - r.top) * H / (r.height || H) };
+    }
+    // a pen that reports pressure draws thinner and thicker; a mouse and a finger draw one weight
+    function weight(e) { return 4 + (e.pointerType === 'pen' && e.pressure > 0 ? e.pressure : 0.5) * 5; }
+
+    canvas.addEventListener('pointerdown', function (e) {
+      if (active != null || (e.button != null && e.button > 0)) return;
+      e.preventDefault();
+      try { canvas.setPointerCapture(e.pointerId); } catch (ignored) { /* the stroke still works inside the pad */ }
+      active = e.pointerId;
+      last = mid = at(e);
+      ctx.beginPath();
+      ctx.arc(last.x, last.y, weight(e) / 2, 0, Math.PI * 2);
+      ctx.fill();
+      use.disabled = false;
+    });
+    canvas.addEventListener('pointermove', function (e) {
+      if (e.pointerId !== active) return;
+      var steps = typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : [];
+      if (!steps.length) steps = [e];
+      steps.forEach(function (step) {
+        var p = at(step);
+        var m = { x: (last.x + p.x) / 2, y: (last.y + p.y) / 2 };
+        ctx.lineWidth = weight(step);
+        ctx.beginPath();
+        ctx.moveTo(mid.x, mid.y);
+        ctx.quadraticCurveTo(last.x, last.y, m.x, m.y);
+        ctx.stroke();
+        last = p;
+        mid = m;
+      });
+    });
+    function lift(e) {
+      if (e.pointerId !== active) return;
+      ctx.lineWidth = weight(e);
+      ctx.beginPath();
+      ctx.moveTo(mid.x, mid.y);
+      ctx.lineTo(last.x, last.y);
+      ctx.stroke();
+      active = null;
+    }
+    canvas.addEventListener('pointerup', lift);
+    canvas.addEventListener('pointercancel', lift);
+
+    function inkOnly() {
+      var data = ctx.getImageData(0, 0, W, H).data;
+      var x0 = W, y0 = H, x1 = -1, y1 = -1;
+      for (var y = 0; y < H; y++) {
+        for (var x = 0; x < W; x++) {
+          if (data[(y * W + x) * 4 + 3] > 8) {
+            if (x < x0) x0 = x;
+            if (x > x1) x1 = x;
+            if (y < y0) y0 = y;
+            if (y > y1) y1 = y;
+          }
+        }
+      }
+      if (x1 < 0) return null;
+      x0 = Math.max(0, x0 - 12); y0 = Math.max(0, y0 - 12);
+      x1 = Math.min(W - 1, x1 + 12); y1 = Math.min(H - 1, y1 + 12);
+      var w = x1 - x0 + 1, hgt = y1 - y0 + 1;
+      var scale = Math.min(1, maxW / w, maxH / hgt);
+      // the same size limit as an uploaded picture: very dense ink is kept smaller, never stored oversized
+      for (var attempt = 0; attempt < 8; attempt++) {
+        var out = document.createElement('canvas');
+        out.width = Math.max(1, Math.round(w * scale));
+        out.height = Math.max(1, Math.round(hgt * scale));
+        out.getContext('2d').drawImage(canvas, x0, y0, w, hgt, 0, 0, out.width, out.height);
+        var src = out.toDataURL('image/png');
+        if (src.length <= MAX_IMAGE_CHARS) return { src: src, w: out.width, h: out.height };
+        scale *= 0.75;
+      }
+      toast('The signature is too detailed to store. Clear it and sign more simply.', 'bad');
+      return null;
+    }
+
+    canvas.setAttribute('aria-describedby', 'sign-hint');
+    var el = h('div', { class: 'sign' },
+      canvas,
+      h('span', { class: 'hint', id: 'sign-hint', text: 'Sign with a mouse, a finger or a pen. Only the ink is kept, so it prints over the paper like a pen would. Drawing needs a pointer: with a keyboard alone, press Cancel and choose a picture of your signature instead.' }),
+      h('div', { class: 'row' }, use,
+        button('Clear', function () { ctx.clearRect(0, 0, W, H); active = null; use.disabled = true; canvas.focus(); }, 'small', { id: 'sign-clear' }),
+        button('Cancel', cancel, 'small quiet', { id: 'sign-cancel' })));
+    el.takeInk = inkOnly;
+    return el;
+  }
+
+  function imageSlot(work, key, label, maxW, maxH, opts) {
+    opts = opts || {};
     var slot = h('div', { class: 'image-slot' });
     function draw() {
       slot.textContent = '';
@@ -2046,7 +2432,21 @@
       });
       slot.appendChild(thumb);
       slot.appendChild(h('div', { class: 'field' }, h('label', { class: 'label', for: 'co-' + key, text: label }), input));
+      if (opts.sign) slot.appendChild(button(work[key] ? 'Draw a new signature' : 'Draw a signature', sign, 'small', { id: 'co-' + key + '-draw' }));
       if (work[key]) slot.appendChild(button('Remove', function () { work[key] = null; draw(); }, 'small quiet'));
+    }
+    function backToSlot() {
+      draw();
+      var again = document.getElementById('co-' + key + '-draw');
+      if (again) again.focus();
+    }
+    function sign() {
+      slot.textContent = '';
+      var pad = signaturePad(maxW, maxH, function (img) { work[key] = img; backToSlot(); }, backToSlot);
+      pad.dataset.key = key;
+      slot.appendChild(pad);
+      var pad = document.getElementById('sign-pad');
+      if (pad) pad.focus();
     }
     draw();
     return slot;
@@ -2073,6 +2473,12 @@
     var noop = function () {};
 
     function build() {
+      // the form is drawn again (a register lookup filled it in): ink on an open pad comes along rather than vanish
+      var openPad = dlg.querySelector('.sign');
+      if (openPad && openPad.takeInk) {
+        var kept = openPad.takeInk();
+        if (kept) work[openPad.dataset.key] = kept;
+      }
       dlg.textContent = '';
       var body = h('div', { class: 'dialog-body' });
       var identity = h('fieldset', null, h('legend', { text: isSupplier ? 'Your company' : 'Customer' }));
@@ -2115,12 +2521,14 @@
             field('Prices are typed', bindSelect(d, 'priceMode', 'co-price-mode', [{ value: 'net', label: 'Without VAT' }, { value: 'gross', label: 'With VAT' }], { changed: noop }), { cls: 'c4 half-sm' }),
             field('Rounding', bindSelect(d, 'rounding', 'co-rounding', Object.keys(C.ROUNDING_STEPS).map(function (k) { return { value: k, label: ROUNDING_LABEL[k] }; }), { changed: noop }), { cls: 'c4 half-sm' }),
             field('Layout', bindSelect(d, 'template', 'co-template', [{ value: 'modern', label: 'Modern' }, { value: 'simple', label: 'Simple' }], { changed: noop }), { cls: 'c4' }),
+            h('div', { class: 'c12' }, bindCheck(d, 'signatureLine', 'co-signature-line', 'Print an empty line for a stamp and signature on new documents', { changed: noop })),
             field('Note printed on every document', bindText(d, 'note', 'co-note', { multiline: true, rows: 2, changed: noop }), { cls: 'c12' }),
             field('Register entry', bindText(work, 'registerNote', 'co-register', { multiline: true, rows: 2, changed: noop, placeholder: 'For example: Zapsáno v obchodním rejstříku u Městského soudu v Praze, oddíl C, vložka 12345' }), { cls: 'c12' }))));
 
-        body.appendChild(h('fieldset', null, h('legend', { text: 'Logo and stamp' }),
+        body.appendChild(h('fieldset', null, h('legend', { text: 'Logo, stamp and signature' }),
           imageSlot(work, 'logo', 'Logo, printed at the top', 720, 300),
-          imageSlot(work, 'stamp', 'Stamp or signature, printed at the bottom', 600, 340)));
+          imageSlot(work, 'stamp', 'Stamp or signature, printed at the bottom (a picture, or draw it)', 600, 340, { sign: true }),
+          h('span', { class: 'hint', text: 'An invoice is valid without a signature. A signature drawn or pictured here is printed on every document of this company.' })));
       }
 
       var form = h('form', { class: 'dialog-form', method: 'dialog' },
@@ -2142,6 +2550,13 @@
             n.focus();
           }
           return;
+        }
+        // a signature drawn and not yet taken with "Use this signature" is taken now, once the save is going ahead:
+        // Save means keep what I see
+        var pad = dlg.querySelector('.sign');
+        if (pad && pad.takeInk) {
+          var ink = pad.takeInk();
+          if (ink) work[pad.dataset.key] = ink;
         }
         if (isSupplier) {
           var days = Number(work.defaults.dueDays);
@@ -2214,6 +2629,23 @@
       h('header', null, h('h2', { text: 'Export' })), counts,
       h('p', { class: 'muted', text: 'One JSON file with everything, logos included. Keep it somewhere safe; it can be imported here or on another device.' }),
       h('div', { class: 'row' }, exportBtn)));
+    var migrateStatus = h('div', { id: 'migrate-status', role: 'status', 'aria-live': 'polite' });
+    var migrate = h('input', { type: 'file', multiple: true, accept: '.isdoc,.isdocx,.zip,.pdf,.xml', id: 'migrate-files', style: 'max-width:280px' });
+    migrate.addEventListener('change', function () {
+      var picked = [].slice.call(migrate.files || []);
+      migrate.value = '';
+      importFromService(picked, migrateStatus);
+    });
+    page.appendChild(h('section', { class: 'section', id: 'migrate' },
+      h('header', null, h('h2', { text: 'Move here from another service' })),
+      h('p', { class: 'muted', text: 'Bring the invoices you issued in FakturaOnline, Fakturoid or any other service that exports ISDOC, the Czech e-invoice format. Each invoice comes with its lines, its customer and its payment details, and nothing is replaced: an invoice that is already here is left as it is.' }),
+      h('ol', { class: 'howto' },
+        h('li', null, h('b', { text: 'FakturaOnline: ' }), 'Exporty \u2192 Export faktur \u2192 ISDOC.'),
+        h('li', null, h('b', { text: 'Fakturoid: ' }), 'Faktury \u2192 Export \u2192 ISDOC (ZIP), up to three months at a time.'),
+        h('li', null, h('b', { text: 'No export on your plan? ' }), 'The PDF invoices both services make carry the same data inside. Choose the PDFs.')),
+      h('div', { class: 'field' }, h('label', { class: 'label', for: 'migrate-files', text: 'Exported files (.isdoc, .isdocx, .zip or .pdf)' }), migrate),
+      migrateStatus));
+
     page.appendChild(h('section', { class: 'section' },
       h('header', null, h('h2', { text: 'Import' })),
       h('p', { class: 'muted', text: 'Adds the companies and documents of a backup file to what is here. A record that is already here is replaced by the one in the file.' }),
@@ -2266,6 +2698,208 @@
       toast('Imported ' + companies.length + ' companies and ' + invoices.length + ' documents.');
     }, function (e) { toast('Part of the backup was not saved. ' + errorText(e), 'bad'); });
     renderBackup();
+  }
+
+  // ------------------------------------------------- import from a service
+
+  /** The files a person picked, read whole. A file that cannot be read comes through empty and is reported as such. */
+  function readPicked(files) {
+    return Promise.all(files.map(function (f) {
+      return f.arrayBuffer().then(function (buf) { return { name: f.name, bytes: new Uint8Array(buf) }; },
+        function () { return { name: f.name, bytes: null }; });
+    }));
+  }
+
+  function reasonList(list) {
+    var ul = h('ul', { class: 'imp-list' });
+    list.slice(0, 40).forEach(function (x) { ul.appendChild(h('li', null, h('b', { text: (x.source || x.number) + ': ' }), x.reason || x.text)); });
+    if (list.length > 40) ul.appendChild(h('li', { text: 'and ' + (list.length - 40) + ' more.' }));
+    return ul;
+  }
+
+  var importRun = 0;
+
+  async function importFromService(files, status) {
+    if (!files.length) return;
+    var run = ++importRun;
+    status.textContent = '';
+    var size = files.reduce(function (sum, f) { return sum + (f.size || 0); }, 0);
+    if (size > 400 * 1024 * 1024) {
+      status.appendChild(h('div', { class: 'notice warn' }, h('p', { text: 'Those files are too large to read at once. Choose fewer of them, or export a shorter period.' })));
+      return;
+    }
+    status.appendChild(h('p', { class: 'muted', text: 'Reading ' + files.length + (files.length === 1 ? ' file\u2026' : ' files\u2026') }));
+    var result;
+    try {
+      result = await Import.readFiles(await readPicked(files));
+    } catch (e) {
+      status.textContent = '';
+      status.appendChild(h('div', { class: 'notice bad' }, h('p', { text: 'The files could not be read. ' + errorText(e) })));
+      return;
+    }
+    if (run !== importRun) return;                    // a later pick took over
+    status.textContent = '';
+    // the Backup screen may have been redrawn meanwhile: what counts is whether the person is on it now
+    status = document.getElementById('migrate-status');
+    // they went elsewhere, or opened something, while the files were read: do not put a dialog over their work
+    if (location.hash !== '#backup' || !status || $('#dialog').open) {
+      if (result.found.length) toast('The files were read, but you had moved on. Choose them again on the Backup tab to bring them in.', 'long');
+      return;
+    }
+    if (!result.found.length) {
+      status.appendChild(h('div', { class: 'notice warn' },
+        h('p', null, h('strong', { text: 'No invoice was found in what you chose. ' }), 'Choose the ISDOC export of the service you are leaving, or the PDF invoices it made.'),
+        result.skipped.length ? reasonList(result.skipped) : null));
+      return;
+    }
+    await saveNow();
+    openImportDialog(result);
+  }
+
+  /** What was found, who issued it and how to read "paid", then one button that brings it in. */
+  function openImportDialog(result) {
+    var dlg = $('#dialog');
+    dlg.addEventListener('close', function () {
+      var el = document.getElementById('migrate-files');
+      if (el && el.focus) el.focus();
+    }, { once: true });
+    var choice = { paid: 'due', leaveOut: {} };
+    var current = null;
+    var started = false;
+
+    function plan() {
+      return Import.plan(result.found, { companies: S.companies, invoices: S.invoices },
+        { today: today(), now: new Date().toISOString(), paid: choice.paid, leaveOut: choice.leaveOut });
+    }
+
+    function build(focusId) {
+      current = plan();
+      if (!started) {
+        started = true;
+        // invoices that look received, not issued, start unticked: importing them would make their senders "my companies"
+        var received = current.groups.filter(function (g) { return g.received; });
+        if (received.length) {
+          received.forEach(function (g) { choice.leaveOut[g.key] = true; });
+          current = plan();
+        }
+      }
+      dlg.textContent = '';
+      var body = h('div', { class: 'dialog-body' });
+      var found = result.found.length;
+      var summary = found + (found === 1 ? ' document was' : ' documents were') + ' found in what you chose.';
+      if (current.duplicates) summary += ' ' + current.duplicates + (current.duplicates === 1 ? ' is' : ' are') + ' already here and ' + (current.duplicates === 1 ? 'stays as it is.' : 'stay as they are.');
+      body.appendChild(h('p', { id: 'imp-summary', text: summary }));
+      if (current.likelyReceived) {
+        body.appendChild(h('div', { class: 'notice warn' }, h('p', null, h('strong', { text: 'Some of these look like invoices you received. ' }),
+          'Bring in only the ones you issued: every company ticked below becomes one of your companies.')));
+      }
+
+      var groups = h('div', { class: 'imp-groups' });
+      current.groups.forEach(function (g, i) {
+        var id = 'imp-group-' + i;
+        var box = h('input', { type: 'checkbox', id: id });
+        box.checked = g.selected && g.count > 0;
+        box.disabled = g.count === 0;
+        box.addEventListener('change', function () {
+          if (box.checked) delete choice.leaveOut[g.key]; else choice.leaveOut[g.key] = true;
+          build(id);
+        });
+        var line;
+        if (g.count === 0) line = 'All ' + g.duplicates + ' of its documents are already here.';
+        else {
+          line = g.count + (g.count === 1 ? ' document' : ' documents') + ', ' +
+            (g.from === g.to ? C.formatDate(g.from, UI) : C.formatDate(g.from, UI) + ' to ' + C.formatDate(g.to, UI)) + ', ' +
+            g.totals.map(function (t) { return money(t.amount, t.currency); }).join(' + ') + '. ' +
+            (g.isNew ? 'It is added to your companies.' : 'They join the company you already have.') +
+            (g.duplicates ? ' ' + g.duplicates + ' more ' + (g.duplicates === 1 ? 'is' : 'are') + ' already here.' : '');
+        }
+        groups.appendChild(h('label', { class: 'check imp-group' }, box,
+          h('span', null, h('strong', { text: g.name || 'Unnamed company' }), g.companyNumber ? ' (I\u010CO ' + g.companyNumber + ')' : '',
+            h('span', { class: 'hint', text: line }))));
+      });
+      body.appendChild(h('fieldset', null, h('legend', { text: 'Issued by' }), groups));
+
+      var paid = h('select', { id: 'imp-paid' },
+        h('option', { value: 'due', text: 'Paid, where the due date has passed' }),
+        h('option', { value: 'all', text: 'All of them are paid' }),
+        h('option', { value: 'none', text: 'None of them is paid yet' }));
+      paid.value = choice.paid;
+      paid.addEventListener('change', function () { choice.paid = paid.value; build('imp-paid'); });
+      body.appendChild(h('fieldset', null, h('legend', { text: 'Paid or not' }),
+        field('Read the invoices as', paid, { hint: 'The files do not say whether or when an invoice was paid. A paid one gets its due date as the day it was paid; you can change any of them in Documents.' })));
+
+      if (S.mode === 'cloud' && S.invoices.length + S.companies.length + current.invoices.length + current.companies.length > 1000) {
+        body.appendChild(h('div', { class: 'notice warn' }, h('p', { text: 'This brings you past 1,000 records, and this page loads only the first 1,000. Bring in a shorter period.' })));
+      }
+      if (current.notes.length) {
+        body.appendChild(h('details', { class: 'more', id: 'imp-notes' },
+          h('summary', { text: current.notes.length + (current.notes.length === 1 ? ' thing' : ' things') + ' to know about how they come in' }), reasonList(current.notes)));
+      }
+      var left = result.skipped.concat(current.skipped);
+      if (left.length) {
+        body.appendChild(h('details', { class: 'more', id: 'imp-skipped' },
+          h('summary', { text: left.length + (left.length === 1 ? ' file is' : ' files are') + ' left out' }), reasonList(left)));
+      }
+
+      var n = current.invoices.length;
+      var submit = h('button', { type: 'submit', class: 'btn primary', id: 'imp-go', text: n ? 'Import ' + n + (n === 1 ? ' document' : ' documents') : 'Nothing to import' });
+      submit.disabled = !n;
+      var form = h('form', { class: 'dialog-form', method: 'dialog' },
+        h('div', { class: 'dialog-head' }, h('h2', { id: 'dialog-title', text: 'Import from another service' }), h('span', { class: 'spacer' })),
+        h('div', { class: 'toasts', role: 'status', 'aria-live': 'polite' }),
+        body,
+        h('div', { class: 'dialog-foot' }, button('Cancel', function () { dlg.close(); }), submit));
+      form.addEventListener('submit', function (e) {
+        e.preventDefault();
+        if (!current.invoices.length) return;
+        var planned = current;
+        dlg.close();                 // first, so the message about what came in lands on the page, not in the closing dialog
+        bringIn(planned);
+      });
+      dlg.appendChild(form);
+      var back = focusId ? document.getElementById(focusId) : null;
+      if (back) back.focus();
+    }
+
+    build();
+    if (typeof dlg.showModal === 'function') { if (!dlg.open) dlg.showModal(); }
+    else dlg.setAttribute('open', '');
+    var first = document.getElementById('imp-go');
+    if (first && !first.disabled) first.focus();
+  }
+
+  /** Adds a plan's companies and documents and stores them, a few at a time so a long import does not flood the storage. */
+  function bringIn(planned) {
+    var companies = planned.companies, docs = planned.invoices;
+    companies.forEach(function (c) { S.companies.push(c); });
+    docs.forEach(function (d) { S.invoices.push(d); });
+    if (S.example) leaveExample();
+    var jobs = companies.map(function (c) { return function () { return Store.putCompany(c); }; })
+      .concat(docs.map(function (d) {
+        return function () {
+          // a document that did not reach storage is tried again with the next save, like any other
+          return Store.putInvoice(d).catch(function (e) { if (failedDocs.indexOf(d) === -1) failedDocs.push(d); throw e; });
+        };
+      }));
+    var next = 0, failedCount = 0, lastError = null;
+    function worker() {
+      if (next >= jobs.length) return Promise.resolve();
+      return jobs[next++]().catch(function (e) { failedCount++; lastError = e; }).then(worker);
+    }
+    var workers = [];
+    for (var i = 0; i < 8; i++) workers.push(worker());
+    Promise.all(workers).then(function () {
+      if (failedCount) toast(failedCount + ' of ' + jobs.length + ' records were not saved yet. ' + errorText(lastError), 'bad');
+    });
+    var suppliersAdded = companies.filter(function (c) { return c.kind === 'supplier'; }).length;
+    var customersAdded = companies.length - suppliersAdded;
+    toast('Imported ' + docs.length + (docs.length === 1 ? ' document' : ' documents') +
+      (customersAdded ? ', ' + customersAdded + (customersAdded === 1 ? ' customer' : ' customers') : '') +
+      (suppliersAdded ? ' and ' + suppliersAdded + (suppliersAdded === 1 ? ' company of yours' : ' companies of yours') : '') + '.', 'long');
+    // the Documents list, with the keyboard on its heading: the dialog and the file field it came from are gone
+    showView('documents');
+    lastPressedId = '';
+    focusPage();
   }
 
   // ----------------------------------------------------------------- start

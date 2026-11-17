@@ -1640,3 +1640,23 @@ test('givenACzechInvoice_whenTheQrIsBuilt_thenItNamesTheSupplierAsRecipient', ()
   inv.supplier.name = '';
   assert.doesNotMatch(C.paymentQr(inv, C.computeTotals(inv)).text, /\*RN:/);
 });
+
+test('givenNoStampAndNoRequest_whenTheDocumentIsBuilt_thenThereIsNoSignatureArea', () => {
+  const C = require('../core.js');
+  const I = require('../i18n.js');
+  const sup = C.newCompany('supplier');
+  const inv = C.newInvoice(sup, { today: '2026-11-17' });
+  const build = (images) => C.buildViewModel(inv, { labels: I.get('cs'), countryName: (c) => c, images: images || {} });
+  assert.equal(inv.showSignature, false);
+  assert.equal(build().signature, null);
+  // asked for: an empty line with its label
+  inv.showSignature = true;
+  assert.deepEqual(build().signature, { label: 'Razítko a podpis', stamp: null });
+  // a stamp image is printed whether or not the line was asked for
+  inv.showSignature = false;
+  const stamp = { src: 'data:image/png;base64,AAAA', w: 10, h: 10 };
+  assert.deepEqual(build({ stamp }).signature, { label: 'Razítko a podpis', stamp });
+  // a company can ask for the line on every new document
+  sup.defaults.signatureLine = true;
+  assert.equal(C.newInvoice(sup, { today: '2026-11-17' }).showSignature, true);
+});

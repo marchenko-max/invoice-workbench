@@ -711,6 +711,8 @@
   }
 
   function signatureBlock(sig, w, st) {
+    // no signature area was asked for: it takes no room at all
+    if (!sig) return { ops: [], h: 0 };
     var ops = [];
     var stamp = sig && sig.stamp && sig.stamp.src && sig.stamp.w > 0 && sig.stamp.h > 0 ? sig.stamp : null;
     var area = 19;
@@ -806,15 +808,15 @@
     // closing block: summary and totals, notes, signature
     var A = totalsSection(vm, st);
     var notes = (vm.notes || []).filter(function (n) { return String(n).trim() !== ''; });
-    var sigW = 64;
+    var sigW = vm.signature ? 64 : 0;
     var sig = signatureBlock(vm.signature, sigW, st);
     var gapAN = 5;
     var narrowItems = notes.length ? noteItems(notes, CW - sigW - 10, st) : [];
     var narrow = notes.length ? notesBlock(narrowItems, CW - sigW - 10, st) : null;
-    var side = notes.length > 0 && narrow.h <= 58;
+    var side = !!vm.signature && notes.length > 0 && narrow.h <= 58;   // notes sit beside the signature only when there is one
     var fullItems = notes.length && !side ? noteItems(notes, CW, st) : null;
     var N = notes.length ? (side ? narrow : notesBlock(fullItems, CW, st)) : null;
-    var lower = N ? (side ? Math.max(N.h, sig.h) : N.h + 7 + sig.h) : sig.h;
+    var lower = N ? (side ? Math.max(N.h, sig.h) : N.h + (sig.h ? 7 + sig.h : 0)) : sig.h;
     var blockH = A.h + gapAN + lower;
     var fresh = BODY_BOTTOM - (MT + RUN_H);
 
@@ -826,7 +828,7 @@
         return top + lower;
       }
       put(N.ops, top);
-      put(shift(sig.ops, CW - sigW, 0), top + N.h + 7);
+      if (sig.h) put(shift(sig.ops, CW - sigW, 0), top + N.h + 7);
       return top + lower;
     }
 
@@ -854,10 +856,12 @@
         items = items.slice(take);
         if (items.length) startPage();
       }
-      y += 7;
-      if (!fits(sig.h)) startPage();
-      put(shift(sig.ops, CW - sigW, 0), y);
-      y += sig.h;
+      if (sig.h) {
+        y += 7;
+        if (!fits(sig.h)) startPage();
+        put(shift(sig.ops, CW - sigW, 0), y);
+        y += sig.h;
+      }
     }
 
     // footers

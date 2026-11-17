@@ -514,6 +514,10 @@
    */
   function suggestNumber(pattern, existing, issueDate) {
     var list = (existing || []).filter(function (d) { return d && d.number; });
+    // a document dated after the new one (issued ahead, or imported from a later period) is not what it follows
+    var date = isIsoDate(issueDate) ? issueDate : localToday();
+    var earlier = list.filter(function (d) { return !isIsoDate(d.issueDate) || d.issueDate <= date; });
+    var pool = earlier.length ? earlier : list;
     var last = null;
     // the newest by creation time; when that does not tell them apart, by issue date, then by the higher sequence
     function seqOf(d) {
@@ -527,7 +531,7 @@
       if (ia !== ib) return ia > ib;
       return seqOf(a) > seqOf(b);
     }
-    list.forEach(function (d) {
+    pool.forEach(function (d) {
       if (!last || newer(d, last)) last = d;
     });
     var taken = {};
@@ -714,6 +718,138 @@
     return 'issued';
   }
 
+  // ------------------------------------------------------------- overview
+
+  // What counts as income: invoices, advance invoices and corrective documents. Quotations and proformas do not:
+  // a quotation is not a claim, and a proforma is followed by the invoice that would count the same money twice.
+  var INCOME_SERIES = { invoice: true, advance: true, corrective: true };
+
+  function countsAsIncome(invoice) { return !!INCOME_SERIES[kindOf(invoice).series]; }
+
+  /** '2026-11-17' -> '2026-11' | '2026-Q4' | '2026'. '' for anything that is not a date. */
+  function periodKey(iso, granularity) {
+    if (!isIsoDate(iso)) return '';
+    if (granularity === 'year') return iso.slice(0, 4);
+    if (granularity === 'quarter') return iso.slice(0, 4) + '-Q' + (Math.floor((Number(iso.slice(5, 7)) - 1) / 3) + 1);
+    return iso.slice(0, 7);
+  }
+
+  /**
+   * The periods an overview shows, oldest first, ending with the one `today` is in: the same month a year ago
+   * through to this month (13), the last eight quarters, or up to six years starting no earlier than `firstYear`.
+   */
+  function periodKeys(today, granularity, firstYear) {
+    var day = isIsoDate(today) ? today : localToday();
+    var y = Number(day.slice(0, 4)), m = Number(day.slice(5, 7));
+    var keys = [];
+    if (granularity === 'year') {
+      var from = Math.max(y - 5, Math.min(y, Number(firstYear) || y));
+      for (var yy = from; yy <= y; yy++) keys.push(String(yy));
+      return keys;
+    }
+    if (granularity === 'quarter') {
+      var q = Math.floor((m - 1) / 3);
+      for (var i = 7; i >= 0; i--) {
+        var qi = y * 4 + q - i;
+        keys.push(Math.floor(qi / 4) + '-Q' + (qi % 4 + 1));
+      }
+      return keys;
+    }
+    for (var j = 12; j >= 0; j--) {
+      var mi = y * 12 + (m - 1) - j;
+      keys.push(Math.floor(mi / 12) + '-' + pad2(mi % 12 + 1));
+    }
+    return keys;
+  }
+
+  /**
+   * What was invoiced, or received, period by period.
+   * opts: { today, granularity: 'month' | 'quarter' | 'year', measure: 'issued' | 'paid', currency, supplierId }.
+   * Returns { currency, currencies, granularity, measure, periods: [{ key, amount, net, vat, count }],
+   *   total: { amount, net, vat, count }, statuses: { paid, waiting, overdue, draft } each { amount, count },
+   *   customers: [{ name, amount, count }] }.
+   * Amounts are cents of what each document asks to be paid, VAT included. A draft is counted only among the drafts.
+   * "Issued" places a document in the period of its issue date; "paid" places a paid document in the period it was
+   * paid in (its due date, then its issue date, when no payment date was recorded). The statuses always describe the
+   * documents issued in the periods shown. Currencies are never added together: one is shown at a time.
+   */
+  function overview(invoices, opts) {
+    opts = opts || {};
+    var today = isIsoDate(opts.today) ? opts.today : localToday();
+    var granularity = opts.granularity === 'quarter' || opts.granularity === 'year' ? opts.granularity : 'month';
+    var measure = opts.measure === 'paid' ? 'paid' : 'issued';
+    var docs = (invoices || []).filter(function (d) {
+      return d && countsAsIncome(d) && (!opts.supplierId || d.supplierId === opts.supplierId);
+    });
+    // where a document stands on the time axis: its issue date, or under "paid" the day it was paid; '' when it has no place there
+    function placeOf(d, status) {
+      if (status === 'draft') return '';
+      if (measure !== 'paid') return d.issueDate;
+      if (status !== 'paid') return '';
+      return isIsoDate(d.paidDate) ? d.paidDate : (isIsoDate(d.dueDate) ? d.dueDate : d.issueDate);
+    }
+    function oldestYear(list) {
+      var year = Number(today.slice(0, 4));
+      list.forEach(function (d) { if (isIsoDate(d.issueDate)) year = Math.min(year, Number(d.issueDate.slice(0, 4))); });
+      return year;
+    }
+
+    // The currency shown when none is asked for is the one with the most documents in the periods on screen, so
+    // the page never opens on a currency last used years ago; with nothing on screen at all, the most used one.
+    var perCurrency = Object.create(null);
+    var onScreen = Object.create(null);
+    var shownKeys = Object.create(null);
+    periodKeys(today, granularity, oldestYear(docs)).forEach(function (key) { shownKeys[key] = true; });
+    docs.forEach(function (d) {
+      var code = String(d.currency || 'CZK');
+      perCurrency[code] = (perCurrency[code] || 0) + 1;
+      if (shownKeys[periodKey(placeOf(d, statusOf(d, today)), granularity)]) onScreen[code] = (onScreen[code] || 0) + 1;
+    });
+    var currencies = Object.keys(perCurrency).sort(function (a, b) { return perCurrency[b] - perCurrency[a] || (a < b ? -1 : 1); });
+    var favourite = currencies.slice().sort(function (a, b) { return (onScreen[b] || 0) - (onScreen[a] || 0); })[0];
+    var currency = opts.currency && perCurrency[opts.currency] ? opts.currency : (favourite || 'CZK');
+    docs = docs.filter(function (d) { return String(d.currency || 'CZK') === currency; });
+
+    var firstYear = oldestYear(docs);
+    var index = Object.create(null);
+    var periods = periodKeys(today, granularity, firstYear).map(function (key, i) {
+      index[key] = i;
+      return { key: key, amount: 0, net: 0, vat: 0, count: 0 };
+    });
+    var total = { amount: 0, net: 0, vat: 0, count: 0 };
+    var statuses = { paid: { amount: 0, count: 0 }, waiting: { amount: 0, count: 0 }, overdue: { amount: 0, count: 0 }, draft: { amount: 0, count: 0 } };
+    var byCustomer = Object.create(null);
+
+    docs.forEach(function (d) {
+      var t = computeTotals(d);
+      var status = statusOf(d, today);
+      if (index[periodKey(d.issueDate, granularity)] !== undefined) {
+        var slot = status === 'issued' ? statuses.waiting : statuses[status];
+        // a credit is not money someone owes us: it is never "waiting" or "overdue", it stands with what is settled
+        if (t.payable < 0 && (status === 'issued' || status === 'overdue')) slot = statuses.paid;
+        slot.amount += t.payable;
+        slot.count += 1;
+      }
+      var when = placeOf(d, status);
+      if (!when) return;
+      var at = index[periodKey(when, granularity)];
+      if (at === undefined) return;
+      var p = periods[at];
+      p.amount += t.payable; p.net += t.net; p.vat += t.vat; p.count += 1;
+      total.amount += t.payable; total.net += t.net; total.vat += t.vat; total.count += 1;
+      var name = String((d.customer && d.customer.name) || '').trim();
+      var c = byCustomer[name] || (byCustomer[name] = { name: name, amount: 0, count: 0 });
+      c.amount += t.payable;
+      c.count += 1;
+    });
+    var customers = Object.keys(byCustomer).map(function (k) { return byCustomer[k]; })
+      .sort(function (a, b) { return b.amount - a.amount || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0); });
+    return {
+      currency: currency, currencies: currencies, granularity: granularity, measure: measure,
+      periods: periods, total: total, statuses: statuses, customers: customers
+    };
+  }
+
   // ------------------------------------------------------------ creation
 
   function uid() {
@@ -738,7 +874,7 @@
 
   var SUPPLIER_DEFAULTS = {
     dueDays: 14, currency: 'CZK', language: 'cs', paymentMethod: 'transfer', rounding: 'none', template: 'modern',
-    color: '#1d4e89', numberPattern: 'YYYYNNNN', issuedBy: '', note: '', priceMode: 'net', showQr: true
+    color: '#1d4e89', numberPattern: 'YYYYNNNN', issuedBy: '', note: '', priceMode: 'net', showQr: true, signatureLine: false
   };
 
   function partySnapshot(company) {
@@ -795,7 +931,7 @@
       issueDate: today, taxDate: today, dueIn: dueDays, dueDate: addDays(today, dueDays),
       paymentMethod: d.paymentMethod, bank: bank,
       language: d.language, currency: d.currency, registerNote: (supplier && supplier.registerNote) || '',
-      showQr: d.showQr !== false, rounding: d.rounding, template: d.template, color: d.color,
+      showQr: d.showQr !== false, showSignature: !!d.signatureLine, rounding: d.rounding, template: d.template, color: d.color,
       supplier: partySnapshot(supplier), customer: emptyParty(),
       priceMode: d.priceMode === 'gross' ? 'gross' : 'net',
       items: [newItem(vatPayer ? VAT_RATES[0] : 0)], documentDiscount: null, note: d.note || '',
@@ -1084,7 +1220,8 @@
       totals: totalRows,
       grandTotal: { label: grandLabel, value: money(totals.payable) },
       notes: notes,
-      signature: { label: L.stampAndSignature, stamp: normalizeImage(images.stamp) },
+      // a stamp or signature image is printed whenever the company has one; an empty line for signing by hand only on request
+      signature: (normalizeImage(images.stamp) || invoice.showSignature) ? { label: L.stampAndSignature, stamp: normalizeImage(images.stamp) } : null,
       footer: { left: invoice.issuedBy ? L.issuedBy + ' ' + invoice.issuedBy : '', pageTemplate: L.page }
     };
   }
@@ -1105,6 +1242,7 @@
     kindOf: kindOf, vatModeOf: vatModeOf, priceModeOf: priceModeOf, computeTotals: computeTotals, statusOf: statusOf,
     uid: uid, emptyParty: emptyParty, emptyBank: emptyBank, partySnapshot: partySnapshot,
     newCompany: newCompany, newItem: newItem, newInvoice: newInvoice, normalizeInvoice: normalizeInvoice, duplicateInvoice: duplicateInvoice,
-    normalizeImage: normalizeImage, buildViewModel: buildViewModel
+    normalizeImage: normalizeImage, buildViewModel: buildViewModel,
+    countsAsIncome: countsAsIncome, periodKey: periodKey, periodKeys: periodKeys, overview: overview
   };
 });

@@ -51,6 +51,11 @@
   --radius-l: 16px;
   --check: 1.05rem;
   --bar-h: 56px;
+  /* chart: one hue per measure, a grid one step off the surface */
+  --series-1: #2a78d6;
+  --series-2: #1baf7a;
+  --grid: #ececf0;
+  --axis: #c7c7cc;
   --ease: cubic-bezier(.32, .72, 0, 1);   /* settles like a critically damped spring: no overshoot */
 }
 @media (prefers-color-scheme: dark) {
@@ -67,6 +72,7 @@
     --scrim: rgba(0, 0, 0, .5); --material: rgba(18, 18, 20, .72); --material-edge: rgba(255, 255, 255, .14);
     --toast: rgba(245, 245, 247, .92); --toast-fg: #1d1d1f; --toast-bad: #ff6b61; --toast-bad-fg: #1d1d1f;
     --press-dim: brightness(1.18);
+    --series-1: #3987e5; --series-2: #199e70; --grid: #2c2c2e; --axis: #48484a;
     color-scheme: dark;
   }
 }
@@ -83,6 +89,7 @@
   --scrim: rgba(0, 0, 0, .5); --material: rgba(18, 18, 20, .72); --material-edge: rgba(255, 255, 255, .14);
   --toast: rgba(245, 245, 247, .92); --toast-fg: #1d1d1f; --toast-bad: #ff6b61; --toast-bad-fg: #1d1d1f;
   --press-dim: brightness(1.18);
+  --series-1: #3987e5; --series-2: #199e70; --grid: #2c2c2e; --axis: #48484a;
   color-scheme: dark;
 }
 
@@ -269,6 +276,11 @@ details.more[open] > summary { margin-bottom: 10px; }
 .image-slot { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
 .image-slot .thumb { width: 96px; height: 54px; border: 1px dashed var(--line-strong); border-radius: var(--radius); background: var(--paper); display: flex; align-items: center; justify-content: center; overflow: hidden; color: #66666c; font-size: 0.75rem; }
 .image-slot .thumb img { max-width: 100%; max-height: 100%; }
+/* signing: white paper in either theme, a faint line to sign on, and no scrolling under the finger */
+.sign { flex: 1 1 100%; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.sign-pad { display: block; width: 100%; max-width: 600px; aspect-ratio: 1200 / 440; border: 1px dashed var(--line-strong); border-radius: var(--radius); touch-action: none; cursor: crosshair;
+  background: linear-gradient(to bottom, transparent calc(74% - 1px), #d0d0d5 calc(74% - 1px), #d0d0d5 74%, transparent 74%), #ffffff; }
+.sign-pad:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
 
 .preview { position: sticky; top: calc(env(safe-area-inset-top, 0px) + var(--bar-h) + 16px); min-width: 0; display: flex; flex-direction: column; gap: 10px; }
 .preview-head { display: flex; align-items: baseline; gap: 8px; padding-left: 4px; }
@@ -289,8 +301,10 @@ details.more[open] > summary { margin-bottom: 10px; }
   .c6, .c4, .c3, .c8 { grid-column: span 12; }
   .half-sm { grid-column: span 6; }
   .item, .item.no-vat { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
-  .tabs { display: flex; flex-wrap: wrap; width: 100%; }
-  .tab { flex: 1 1 0; min-width: max-content; padding-inline: 8px; font-size: 0.8125rem; }
+  /* five tabs stay one row: they share the width where they fit and scroll sideways where they do not */
+  .tabs { display: flex; flex-wrap: nowrap; width: 100%; overflow-x: auto; scrollbar-width: none; overscroll-behavior-x: contain; }
+  .tabs::-webkit-scrollbar { display: none; }
+  .tab { flex: 1 0 auto; min-width: max-content; padding-inline: 6px; font-size: 0.8125rem; }
   .section { padding: 16px; }
   h1 { font-size: 1.375rem; }
   /* on a phone the two actions get a bar of their own at the bottom, under the thumb, and the top bar stays short */
@@ -311,7 +325,8 @@ details.more[open] > summary { margin-bottom: 10px; }
   .btn { min-height: 44px; }
   .btn.small { min-height: 38px; }
   :root { --check: 1.375rem; }
-  .tab, .seg button { min-height: 40px; display: inline-flex; align-items: center; justify-content: center; }
+  .tab, .seg button { min-height: 44px; display: inline-flex; align-items: center; justify-content: center; }
+  .theme-select { min-height: 44px; }
   .check { min-height: 44px; align-items: center; }
   .check input { margin: 0; }
   .swatch, input[type="color"] { width: 36px; height: 36px; }
@@ -321,6 +336,52 @@ details.more[open] > summary { margin-bottom: 10px; }
   input.mono { font-size: 1rem; }
   details.more > summary { padding-block: 10px; }
 }
+
+/* overview: one headline figure, one chart, then the states and the customers behind it */
+.hero { display: flex; flex-direction: column; gap: 2px; }
+.hero .label { color: var(--muted); }
+/* a figure is one word, currency included: it is never broken, it gets smaller with the screen instead */
+.hero .value { font-size: clamp(1.375rem, 7.6vw, 3rem); font-weight: 600; letter-spacing: -.03em; line-height: 1.08; white-space: nowrap; }
+.hero .sub { color: var(--muted); font-size: 0.875rem; }
+.chart { position: relative; min-width: 0; }
+.chart svg { display: block; width: 100%; height: auto; overflow: visible; }
+.chart .tick { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.chart .tick.now { fill: var(--fg); font-weight: 600; }
+.chart .grid { stroke: var(--grid); stroke-width: 1; }
+.chart .axis { stroke: var(--axis); stroke-width: 1; }
+.chart .bar { fill: var(--series-1); transition: opacity .12s ease-out; }
+.chart[data-measure="paid"] .bar { fill: var(--series-2); }
+.chart .hit { fill: transparent; }
+.chart .col { outline: none; }
+.chart .col:hover .bar, .chart .col:focus-visible .bar { opacity: .7; }
+.chart .col:focus-visible .hit { stroke: var(--accent); stroke-width: 2; }
+.chart .cap { fill: var(--fg); font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.chart-tip { position: absolute; z-index: 5; pointer-events: none; transform: translate(-50%, -100%); background: var(--toast); color: var(--toast-fg); border-radius: 10px; padding: 6px 10px; font-size: 0.8125rem; white-space: nowrap; box-shadow: 0 8px 24px rgba(0, 0, 0, .18); }
+.chart-tip strong { display: block; font-size: 0.9375rem; font-variant-numeric: tabular-nums; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 12rem), 1fr)); gap: 12px; }
+.tile { background: var(--sunken); border-radius: 12px; padding: 12px 14px; display: flex; flex-direction: column; align-items: flex-start; gap: 6px; min-width: 0; }
+.tile .value { font-size: 1.125rem; font-weight: 600; letter-spacing: -.012em; white-space: nowrap; }
+.tile .count { font-size: 0.8125rem; color: var(--muted); }
+.tile .chip { max-width: 100%; white-space: normal; }
+.meter { height: 6px; min-width: 48px; border-radius: 3px; background: var(--fill); overflow: hidden; }
+.meter > span { display: block; height: 100%; border-radius: 3px; background: var(--series-1); }
+[data-measure="paid"] .meter > span { background: var(--series-2); }
+.overview-foot { font-size: 0.8125rem; color: var(--muted); max-width: 80ch; }
+@media (max-width: 760px) {
+  .tile { padding: 12px; }
+}
+@media (max-width: 380px) {
+  /* a figure is one word, currency included: give it the row rather than break it */
+  .tile .value { font-size: 1rem; }
+}
+
+/* import from another service: where to find the export, then what was found */
+.howto { margin: 0; padding-left: 1.25em; display: flex; flex-direction: column; gap: 4px; color: var(--muted); max-width: 80ch; }
+.howto b { color: var(--fg); font-weight: 600; }
+.imp-groups { display: flex; flex-direction: column; gap: 10px; }
+.imp-group > span { min-width: 0; overflow-wrap: anywhere; }
+.imp-group .hint { display: block; }
+.imp-list { margin: 0; padding-left: 1.25em; display: flex; flex-direction: column; gap: 4px; font-size: 0.875rem; color: var(--muted); overflow-wrap: anywhere; }
 
 /* dialog: a sheet that arrives as a material and leaves the way it came */
 dialog { border: 0; border-radius: 18px; padding: 0; background: var(--surface); color: var(--fg); width: min(720px, calc(100vw - 24px)); max-height: calc(100vh - 32px); box-shadow: var(--float-shadow); overflow: hidden; }
@@ -395,6 +456,7 @@ try { var savedTheme = !window.claude && localStorage.getItem("invoice-workbench
   <div class="wrap">
     <div class="brand"><span class="brand-mark" aria-hidden="true"></span>Invoice Workbench</div>
     <nav class="tabs" aria-label="Sections">
+      <a class="tab" id="tab-overview" href="#overview">Overview</a>
       <a class="tab" id="tab-documents" href="#documents">Documents</a>
       <a class="tab" id="tab-editor" href="#editor">Editor</a>
       <a class="tab" id="tab-companies" href="#companies">Companies</a>
@@ -428,6 +490,7 @@ try { var savedTheme = !window.claude && localStorage.getItem("invoice-workbench
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
 <script src="fonts.js"></script>
 <script src="core.js"></script>
+<script src="import.js"></script>
 <script src="i18n.js"></script>
 <script src="i18n-extra.js"></script>
 <script src="render.js"></script>
