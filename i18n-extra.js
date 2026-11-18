@@ -465,5 +465,24 @@
     format: { date: 'DD.MM.YYYY.', decimal: ',', group: '.', percent: '{n}%', prefixSymbols: [] }
   });
 
+  // Words every language needs for a company whose tax is not VAT (a subtotal, one tax line, a total), and for
+  // the name of a bank. In one place, so the ten tables cannot fall out of step.
+  var MORE = {
+    cs: { bankName: 'Banka', routing: 'Směrovací číslo (ABA)', sales: { taxRate: 'Sazba daně', tax: 'Daň z prodeje', subtotal: 'Mezisoučet', taxable: 'Základ daně', net: 'Bez daně', taxId: 'Daňové číslo', corrective: 'Opravný doklad' } },
+    en: { bankName: 'Bank', routing: 'ABA routing no.', sales: { taxRate: 'Tax rate', tax: 'Sales tax', subtotal: 'Subtotal', taxable: 'Taxable amount', net: 'Net', taxId: 'Tax ID', corrective: 'Corrective invoice' } },
+    sk: { bankName: 'Banka', routing: 'Smerovacie číslo (ABA)', sales: { taxRate: 'Sadzba dane', tax: 'Daň z predaja', subtotal: 'Medzisúčet', taxable: 'Základ dane', net: 'Bez dane', taxId: 'Daňové číslo', corrective: 'Opravný doklad' } },
+    de: { bankName: 'Bank', routing: 'Routing-Nummer (ABA)', sales: { taxRate: 'Steuersatz', tax: 'Verkaufssteuer', subtotal: 'Zwischensumme', taxable: 'Steuerpflichtiger Betrag', net: 'Netto', taxId: 'Steuernummer', corrective: 'Korrekturrechnung' } },
+    pl: { bankName: 'Bank', routing: 'Numer rozliczeniowy (ABA)', sales: { taxRate: 'Stawka podatku', tax: 'Podatek od sprzedaży', subtotal: 'Suma częściowa', taxable: 'Podstawa opodatkowania', net: 'Netto', taxId: 'Numer podatkowy', corrective: 'Faktura korygująca' } },
+    uk: { bankName: 'Банк', routing: 'Маршрутний номер (ABA)', sales: { taxRate: 'Ставка податку', tax: 'Податок з продажу', subtotal: 'Проміжний підсумок', taxable: 'База оподаткування', net: 'Без податку', taxId: 'Податковий номер', corrective: 'Коригувальний рахунок' } },
+    fr: { bankName: 'Banque', routing: 'N° de routage (ABA)', sales: { taxRate: 'Taux de taxe', tax: 'Taxe de vente', subtotal: 'Sous-total', taxable: 'Montant imposable', net: 'Hors taxe', taxId: 'N° fiscal', corrective: 'Facture rectificative' } },
+    es: { bankName: 'Banco', routing: 'N.º de ruta (ABA)', sales: { taxRate: 'Tipo impositivo', tax: 'Impuesto sobre las ventas', subtotal: 'Subtotal', taxable: 'Base imponible', net: 'Sin impuesto', taxId: 'N.º fiscal', corrective: 'Factura rectificativa' } },
+    nl: { bankName: 'Bank', routing: 'Routingnummer (ABA)', sales: { taxRate: 'Belastingtarief', tax: 'Verkoopbelasting', subtotal: 'Subtotaal', taxable: 'Belastbaar bedrag', net: 'Excl. belasting', taxId: 'Belastingnummer', corrective: 'Correctiefactuur' } },
+    sr: { bankName: 'Banka', routing: 'Routing broj (ABA)', sales: { taxRate: 'Poreska stopa', tax: 'Porez na promet', subtotal: 'Međuzbir', taxable: 'Poreska osnovica', net: 'Bez poreza', taxId: 'Poreski broj', corrective: 'Korektivni račun' } }
+  };
+  Object.keys(MORE).forEach(function (code) {
+    var table = I18n.tables[code];
+    if (table) Object.keys(MORE[code]).forEach(function (key) { table[key] = MORE[code][key]; });
+  });
+
   return { codes: codes };
 });

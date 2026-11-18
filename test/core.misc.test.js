@@ -1166,7 +1166,8 @@ test('newCompany: supplier and customer shapes', () => {
   assert.equal(typeof s.id, 'string');
   assert.equal(s.vatPayer, false);
   assert.equal(s.country, 'CZ');
-  assert.deepEqual(s.bank, { account: '', accountName: '', iban: '', swift: '', showIban: false, hidden: false });
+  assert.deepEqual(s.bank, { kind: '', account: '', accountName: '', iban: '', swift: '', routing: '', bankName: '', showIban: false, hidden: false });
+  assert.equal(s.taxName, '');
   assert.equal(s.logo, null);
   assert.equal(s.stamp, null);
   assert.deepEqual(s.defaults, core.SUPPLIER_DEFAULTS);
@@ -1292,7 +1293,7 @@ test('newInvoice: the supplier bank is copied by value', () => {
   s.bank = { account: '19-2000145399/0800', accountName: 'Main', iban: '', swift: 'KOMBCZPP', showIban: true, hidden: false, extra: 'ignored' };
   s.registerNote = 'Registered in Prague';
   const inv = core.newInvoice(s, { today: '2026-11-17' });
-  assert.deepEqual(inv.bank, { account: '19-2000145399/0800', accountName: 'Main', iban: '', swift: 'KOMBCZPP', showIban: true, hidden: false });
+  assert.deepEqual(inv.bank, { kind: '', account: '19-2000145399/0800', accountName: 'Main', iban: '', swift: 'KOMBCZPP', routing: '', bankName: '', showIban: true, hidden: false });
   assert.notEqual(inv.bank, s.bank);
   assert.equal(inv.registerNote, 'Registered in Prague');
   inv.bank.account = 'changed';

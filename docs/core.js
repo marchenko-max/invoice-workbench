@@ -54,6 +54,85 @@
   var QTY_DIGITS = 4;
   var PRICE_DIGITS = 4;
 
+  // ------------------------------------------------------------ countries
+
+  /**
+   * What differs from one country to the next on an invoice: what the tax on a sale is called and at what
+   * rates, and how a bank account is written. `tax` is 'vat' where the document's own language has the words for
+   * it, and 'sales' for a tax that is one line under a subtotal, as in the United States, which has no VAT. A
+   * country that is not listed gets VAT with no rates on offer and an IBAN: the person types their own rate.
+   */
+  var COUNTRIES = {
+    CZ: { tax: 'vat', rates: [21, 12, 0], bank: 'cz', currency: 'CZK', language: 'cs' },
+    SK: { tax: 'vat', rates: [23, 19, 5, 0], bank: 'iban', currency: 'EUR', language: 'sk' },
+    UA: { tax: 'vat', rates: [20, 14, 7, 0], bank: 'iban', currency: 'UAH', language: 'uk' },
+    US: { tax: 'sales', rates: [], bank: 'us', currency: 'USD', language: 'en' }
+  };
+  var OTHER_COUNTRY = { tax: 'vat', rates: [], bank: 'iban', currency: '', language: '' };
+  // 'cz': number/bank code. 'iban': an IBAN is the account. 'us': a routing number and an account number.
+  var BANK_KINDS = ['cz', 'iban', 'us'];
+  // where an IBAN takes a SEPA credit transfer, which is what an EPC payment code asks a banking app to make
+  var SEPA = {
+    AT: 1, BE: 1, BG: 1, HR: 1, CY: 1, CZ: 1, DK: 1, EE: 1, FI: 1, FR: 1, DE: 1, GR: 1, HU: 1, IS: 1, IE: 1, IT: 1,
+    LV: 1, LI: 1, LT: 1, LU: 1, MT: 1, NL: 1, NO: 1, PL: 1, PT: 1, RO: 1, SK: 1, SI: 1, ES: 1, SE: 1, CH: 1, GB: 1,
+    MC: 1, SM: 1, AD: 1, VA: 1, AL: 1, MD: 1, ME: 1, MK: 1, RS: 1
+  };
+
+  /** The profile of a country code; an empty one is the Czech Republic, which is where every older record is from. */
+  function countryProfile(code) {
+    var c = String(code == null ? '' : code).toUpperCase() || 'CZ';
+    return has(COUNTRIES, c) ? COUNTRIES[c] : OTHER_COUNTRY;
+  }
+
+  /**
+   * How a document names its tax: { generic, word }. Not generic: VAT, in the words of the document's language.
+   * Generic: a subtotal, one tax line called `word` (the name the company gave its tax, or '' for the language's
+   * "sales tax"), and a total.
+   */
+  function taxRegime(invoice) {
+    var name = String((invoice && invoice.taxName) || '').trim();
+    if (name) return { generic: true, word: name };
+    var profile = countryProfile(invoice && invoice.supplier && invoice.supplier.country);
+    return { generic: profile.tax === 'sales', word: '' };
+  }
+
+  function taxRatesFor(country) { return countryProfile(country).rates.slice(); }
+
+  /** The rate a new line on this company's documents starts with: its own usual rate, else its country's standard one. */
+  function defaultTaxRate(supplier) {
+    var own = supplier && supplier.defaults ? supplier.defaults.taxRate : null;
+    if (own != null && String(own).trim() !== '' && parseNumber(own) >= 0) return parseNumber(own);
+    var rates = countryProfile(supplier && supplier.country).rates;
+    return rates.length ? rates[0] : 0;
+  }
+
+  /** Which way a bank account is written. One saved before there was a choice is read from what it holds. */
+  function bankKind(bank, country) {
+    var k = bank && bank.kind;
+    if (BANK_KINDS.indexOf(k) !== -1) return k;
+    if (bank && String(bank.account || '').trim()) return String(bank.routing || '').trim() ? 'us' : 'cz';
+    if (bank && cleanIban(bank.iban)) return 'iban';
+    return countryProfile(country).bank;
+  }
+
+  /**
+   * Variable, constant and specific symbols are how a Czech or Slovak bank transfer says what it pays for. They
+   * are printed for a Czech account and for a company in those two countries, and nowhere else.
+   */
+  function usesPaymentSymbols(invoice) {
+    var country = String((invoice && invoice.supplier && invoice.supplier.country) || 'CZ').toUpperCase();
+    return country === 'CZ' || country === 'SK' || bankKind(invoice && invoice.bank, country) === 'cz';
+  }
+
+  /** A US bank routing number: nine digits whose sum weighted 3, 7, 1 is a multiple of ten. */
+  function validateRouting(value) {
+    var s = String(value == null ? '' : value).replace(/[\s-]/g, '');
+    if (!/^\d{9}$/.test(s) || s === '000000000') return false;
+    var sum = 0, weights = [3, 7, 1];
+    for (var i = 0; i < 9; i++) sum += Number(s.charAt(i)) * weights[i % 3];
+    return sum % 10 === 0;
+  }
+
   // ------------------------------------------------------------- numbers
 
   function has(obj, key) { return Object.prototype.hasOwnProperty.call(obj, key); }
@@ -318,9 +397,10 @@
 
   /** The IBAN a payment should go to: the one typed, else the one derived from a Czech account number. */
   function resolveIban(bank) {
-    if (!bank) return '';
+    if (!bank || bank.kind === 'us') return '';
     var typed = cleanIban(bank.iban);
     if (typed && validateIban(typed)) return typed;
+    if (bank.kind === 'iban') return '';
     // an account number that fails the CNB check is a typo: a QR for it would pay somebody else
     if (!validateCzAccount(bank.account)) return '';
     var derived = czAccountToIban(bank.account);
@@ -870,11 +950,11 @@
     return { name: '', companyNumber: '', taxNumber: '', street: '', city: '', postcode: '', country: 'CZ', email: '', phone: '', web: '' };
   }
 
-  function emptyBank() { return { account: '', accountName: '', iban: '', swift: '', showIban: false, hidden: false }; }
+  function emptyBank() { return { kind: '', account: '', accountName: '', iban: '', swift: '', routing: '', bankName: '', showIban: false, hidden: false }; }
 
   var SUPPLIER_DEFAULTS = {
     dueDays: 14, currency: 'CZK', language: 'cs', paymentMethod: 'transfer', rounding: 'none', template: 'modern',
-    color: '#1d4e89', numberPattern: 'YYYYNNNN', issuedBy: '', note: '', priceMode: 'net', showQr: true, signatureLine: false
+    color: '#1d4e89', numberPattern: 'YYYYNNNN', issuedBy: '', note: '', priceMode: 'net', showQr: true, signatureLine: false, taxRate: ''
   };
 
   function partySnapshot(company) {
@@ -889,6 +969,7 @@
     c.kind = kind === 'customer' ? 'customer' : 'supplier';
     if (c.kind === 'supplier') {
       c.vatPayer = false;
+      c.taxName = '';              // what the tax is called on documents; '' is VAT (or the country's own tax)
       c.registerNote = '';
       c.bank = emptyBank();
       c.logo = null;
@@ -896,6 +977,18 @@
       c.defaults = JSON.parse(JSON.stringify(SUPPLIER_DEFAULTS));
     }
     return c;
+  }
+
+  /**
+   * A company whose country was just changed from `before`: its usual currency and document language follow, as
+   * long as they were still what the old country gave it. What the person chose themselves is left alone.
+   */
+  function followCountry(company, before) {
+    if (!company || !company.defaults) return company;
+    var was = countryProfile(before), now = countryProfile(company.country);
+    if (now.currency && company.defaults.currency === (was.currency || SUPPLIER_DEFAULTS.currency)) company.defaults.currency = now.currency;
+    if (now.language && company.defaults.language === (was.language || SUPPLIER_DEFAULTS.language)) company.defaults.language = now.language;
+    return company;
   }
 
   function newItem(vatRate) {
@@ -926,6 +1019,7 @@
     if (!(dueDays >= 0)) dueDays = 14;
     return {
       id: uid(), supplierId: supplier ? supplier.id : null, customerId: null, kind: kind, vatApplies: vatPayer,
+      taxName: (supplier && supplier.taxName) || '',
       number: number, recordNumber: '', variableSymbol: defaultVariableSymbol(number), constantSymbol: '', specificSymbol: '',
       orderNumber: '', issuedBy: d.issuedBy || '',
       issueDate: today, taxDate: today, dueIn: dueDays, dueDate: addDays(today, dueDays),
@@ -934,7 +1028,7 @@
       showQr: d.showQr !== false, showSignature: !!d.signatureLine, rounding: d.rounding, template: d.template, color: d.color,
       supplier: partySnapshot(supplier), customer: emptyParty(),
       priceMode: d.priceMode === 'gross' ? 'gross' : 'net',
-      items: [newItem(vatPayer ? VAT_RATES[0] : 0)], documentDiscount: null, note: d.note || '',
+      items: [newItem(vatPayer ? defaultTaxRate(supplier) : 0)], documentDiscount: null, note: d.note || '',
       correctedNumber: '', correctionReason: '', exchangeRate: '',
       status: 'draft', paidDate: '', createdAt: '', updatedAt: ''
     };
@@ -996,14 +1090,36 @@
     return String(template == null ? '' : template).replace(/\{(\w+)\}/g, function (_, k) { return values[k] == null ? '' : values[k]; });
   }
 
-  function partyBlock(role, party, L, countryName, extra) {
+  /**
+   * What a party's two numbers are called. In most countries the document's language has the words; where a
+   * country has names of its own that a reader there looks for, those are used.
+   */
+  function idLabels(party, L, language, otherTax) {
+    var country = String(party.country || '').toUpperCase();
+    var taxId = (L.sales && L.sales.taxId) || 'Tax ID';
+    if (country === 'UA') {
+      var cyrillic = language === 'uk';
+      // a company has an eight-digit code in the state register; a person in business has a ten-digit tax number
+      var person = digitsOnly(party.companyNumber).length === 10;
+      return {
+        company: person ? (cyrillic ? 'РНОКПП' : 'Tax no. (RNOKPP)') : (cyrillic ? 'ЄДРПОУ' : 'EDRPOU'),
+        tax: cyrillic ? 'ІПН' : 'VAT no. (IPN)'
+      };
+    }
+    if (country === 'US') return { company: 'EIN', tax: taxId };
+    // a company whose tax is not VAT has a tax number, not a VAT number
+    return { company: L.companyNumber, tax: otherTax ? taxId : L.taxNumber };
+  }
+
+  function partyBlock(role, party, L, countryName, extra, language, otherTax) {
     var address = [];
     if (party.street) address.push(party.street);
     var cityLine = [party.postcode, party.city].filter(Boolean).join(' ');
     if (cityLine) address.push(cityLine);
     var ids = [];
-    if (party.companyNumber) ids.push({ label: L.companyNumber, value: party.companyNumber });
-    if (party.taxNumber) ids.push({ label: L.taxNumber, value: party.taxNumber });
+    var names = idLabels(party, L, language, otherTax);
+    if (party.companyNumber) ids.push({ label: names.company, value: party.companyNumber });
+    if (party.taxNumber) ids.push({ label: names.tax, value: party.taxNumber });
     // a country alone says nothing: it is printed only under a party that has something else filled in
     if (party.country && (party.name || address.length || ids.length)) address.push(countryName(party.country));
     var contacts = [party.phone, party.email, party.web].filter(Boolean);
@@ -1024,7 +1140,7 @@
     var currency = String(invoice.currency || 'CZK').toUpperCase();
     var message = invoice.number ? String(invoice.number) : '';
     var foreignCustomer = invoice.customer && invoice.customer.country && invoice.customer.country !== 'CZ';
-    if (currency === 'EUR' && (iban.slice(0, 2) !== 'CZ' || foreignCustomer)) {
+    if (currency === 'EUR' && has(SEPA, iban.slice(0, 2)) && (iban.slice(0, 2) !== 'CZ' || foreignCustomer)) {
       var epc = epcQr({ iban: iban, bic: invoice.bank.swift, amountCents: totals.payable, recipient: invoice.supplier && invoice.supplier.name, message: message });
       if (epc) return { type: 'epc', text: epc };
     }
@@ -1070,20 +1186,30 @@
     var money = function (c) { return formatMoney(c, currency, F); };
     var amount = function (c) { return formatAmount(c, F); };
 
-    var docTitle = (L.docTitle && L.docTitle[invoice.kind]) || '';
+    // A tax that is not VAT: a subtotal, one tax line and a total, and none of what only a VAT document carries.
+    var regime = taxRegime(invoice);
+    var sales = L.sales || {};
+    var taxWord = regime.word || sales.tax || 'Sales tax';
+    var titleKind = invoice.kind;
+    if (regime.generic && titleKind === 'invoice_vat') titleKind = 'invoice_novat';
+    if (regime.generic && titleKind === 'quote_vat') titleKind = 'quote_novat';
+    if (regime.generic && titleKind === 'reverse_charge') titleKind = 'invoice_novat';
+    var docTitle = (L.docTitle && L.docTitle[titleKind]) || '';
+    if (regime.generic && titleKind === 'corrective' && sales.corrective) docTitle = sales.corrective;
     var sub = [];
     if (invoice.recordNumber && invoice.recordNumber !== invoice.number) sub.push(L.recordNumber + ' ' + invoice.recordNumber);
     if (invoice.kind === 'corrective' && invoice.correctedNumber) sub.push(fill(L.notes.correctiveFor, { number: invoice.correctedNumber }));
 
     var supplierBadges = [];
-    if (vatMode === 'none' && kind.series !== 'quote') supplierBadges.push(L.nonVatPayer);
+    if (regime.generic) supplierBadges = [];
+    else if (vatMode === 'none' && kind.series !== 'quote') supplierBadges.push(L.nonVatPayer);
     else if (vatMode !== 'none') supplierBadges.push(L.vatPayer);
     var parties = [
       partyBlock('supplier', invoice.supplier, L, countryName, {
         badges: supplierBadges,
         extra: invoice.registerNote ? [invoice.registerNote] : []
-      }),
-      partyBlock('customer', invoice.customer, L, countryName, null)
+      }, invoice.language, regime.generic),
+      partyBlock('customer', invoice.customer, L, countryName, null, invoice.language)
     ];
 
     var payment = null;
@@ -1091,17 +1217,36 @@
       var rows = [];
       var bank = invoice.bank || {};
       if (invoice.paymentMethod === 'transfer' && !bank.hidden) {
-        if (bank.account) rows.push({ label: L.bankAccount, value: bank.account + (bank.accountName ? ' (' + bank.accountName + ')' : '') });
-        var typedIban = cleanIban(bank.iban);
-        var iban = typedIban || (bank.showIban ? czAccountToIban(bank.account) : '');
-        if (iban && (bank.showIban || !bank.account)) rows.push({ label: L.iban, value: formatIban(iban) });
-        if (bank.swift && (bank.showIban || !bank.account)) rows.push({ label: L.swift, value: String(bank.swift).toUpperCase() });
+        var holder = bank.accountName ? ' (' + bank.accountName + ')' : '';
+        var bankName = String(bank.bankName || '').trim();
+        var written = bankKind(bank, invoice.supplier.country);
+        if (written === 'us') {
+          // a transfer inside the United States names the bank by its routing number; a wire from abroad by its SWIFT code
+          if (bankName) rows.push({ label: L.bankName || 'Bank', value: bankName });
+          if (String(bank.routing || '').trim()) rows.push({ label: L.routing || 'ABA routing no.', value: String(bank.routing).replace(/[\s-]/g, '') });
+          if (bank.account) rows.push({ label: L.bankAccount, value: bank.account + holder });
+          if (bank.swift) rows.push({ label: L.swift, value: String(bank.swift).toUpperCase() });
+        } else if (written === 'iban') {
+          var only = cleanIban(bank.iban);
+          // an account read as an IBAN only because nothing else was filled in prints as it always did, without the holder
+          if (only) rows.push({ label: L.iban, value: formatIban(only) + (bank.kind === 'iban' ? holder : '') });
+          if (bank.swift) rows.push({ label: L.swift, value: String(bank.swift).toUpperCase() });
+          if (bankName) rows.push({ label: L.bankName || 'Bank', value: bankName });
+        } else {
+          if (bank.account) rows.push({ label: L.bankAccount, value: bank.account + holder });
+          var typedIban = cleanIban(bank.iban);
+          var iban = typedIban || (bank.showIban ? czAccountToIban(bank.account) : '');
+          if (iban && (bank.showIban || !bank.account)) rows.push({ label: L.iban, value: formatIban(iban) });
+          if (bank.swift && (bank.showIban || !bank.account)) rows.push({ label: L.swift, value: String(bank.swift).toUpperCase() });
+        }
       }
       rows.push({ label: L.paymentMethod, value: (L.paymentMethods && L.paymentMethods[invoice.paymentMethod]) || invoice.paymentMethod });
-      // a payment symbol is digits only and at most ten of them: print exactly what the QR code carries
-      var symVs = digitsOnly(invoice.variableSymbol).slice(0, 10);
-      var symKs = digitsOnly(invoice.constantSymbol).slice(0, 10);
-      var symSs = digitsOnly(invoice.specificSymbol).slice(0, 10);
+      // a payment symbol is digits only and at most ten of them: print exactly what the QR code carries.
+      // A transfer to a US account has no such thing: the invoice number goes in its memo.
+      var symbols = usesPaymentSymbols(invoice);
+      var symVs = symbols ? digitsOnly(invoice.variableSymbol).slice(0, 10) : '';
+      var symKs = symbols ? digitsOnly(invoice.constantSymbol).slice(0, 10) : '';
+      var symSs = symbols ? digitsOnly(invoice.specificSymbol).slice(0, 10) : '';
       if (symVs) rows.push({ label: L.variableSymbol, value: symVs });
       if (symKs) rows.push({ label: L.constantSymbol, value: symKs });
       if (symSs) rows.push({ label: L.specificSymbol, value: symSs });
@@ -1110,23 +1255,24 @@
 
     var dates = [{ label: L.issueDate, value: formatDate(invoice.issueDate, F) }];
     if (invoice.dueDate) dates.push({ label: kind.payable ? L.dueDate : L.validUntil, value: formatDate(invoice.dueDate, F) });
-    if (kind.taxDocument && invoice.taxDate) dates.push({ label: L.taxDate, value: formatDate(invoice.taxDate, F) });
+    if (kind.taxDocument && invoice.taxDate && !regime.generic) dates.push({ label: L.taxDate, value: formatDate(invoice.taxDate, F) });
     if (invoice.orderNumber) dates.push({ label: L.orderNumber, value: invoice.orderNumber });
 
     var qr = paymentQr(invoice, totals);
 
+    var rateLabel = regime.generic ? (sales.taxRate || 'Tax rate') : L.col.vatRate;
     var columns;
     if (vatMode === 'vat') {
       columns = [
         { key: 'qty', label: L.col.qty, align: 'right' }, { key: 'description', label: L.col.description, align: 'left' },
-        { key: 'unitPrice', label: L.col.unitPrice, align: 'right' }, { key: 'vatRate', label: L.col.vatRate, align: 'right' },
-        { key: 'net', label: L.col.net, align: 'right' }, { key: 'vat', label: L.col.vat, align: 'right' },
+        { key: 'unitPrice', label: L.col.unitPrice, align: 'right' }, { key: 'vatRate', label: rateLabel, align: 'right' },
+        { key: 'net', label: regime.generic ? (sales.net || 'Net') : L.col.net, align: 'right' }, { key: 'vat', label: regime.generic ? taxWord : L.col.vat, align: 'right' },
         { key: 'total', label: L.col.total, align: 'right' }
       ];
     } else if (vatMode === 'reverse') {
       columns = [
         { key: 'qty', label: L.col.qty, align: 'right' }, { key: 'description', label: L.col.description, align: 'left' },
-        { key: 'unitPrice', label: L.col.unitPrice, align: 'right' }, { key: 'vatRate', label: L.col.vatRate, align: 'right' },
+        { key: 'unitPrice', label: L.col.unitPrice, align: 'right' }, { key: 'vatRate', label: rateLabel, align: 'right' },
         { key: 'total', label: L.col.total, align: 'right' }
       ];
     } else {
@@ -1161,8 +1307,9 @@
     if (vatMode === 'vat' && totals.byRate.length) {
       vatSummary = {
         columns: [
-          { key: 'rate', label: L.summary.rate, align: 'left' }, { key: 'base', label: L.summary.base, align: 'right' },
-          { key: 'vat', label: L.summary.vat, align: 'right' }, { key: 'total', label: L.summary.total, align: 'right' }
+          { key: 'rate', label: regime.generic ? rateLabel : L.summary.rate, align: 'left' },
+          { key: 'base', label: regime.generic ? (sales.taxable || 'Taxable amount') : L.summary.base, align: 'right' },
+          { key: 'vat', label: regime.generic ? taxWord : L.summary.vat, align: 'right' }, { key: 'total', label: L.summary.total, align: 'right' }
         ],
         rows: totals.byRate.map(function (r) {
           return { cells: { rate: formatPercent(r.rateBp / 100, F), base: amount(r.net), vat: amount(r.vat), total: amount(r.gross) } };
@@ -1173,22 +1320,25 @@
 
     var totalRows = [];
     if (vatMode === 'vat') {
-      totalRows.push({ label: L.totalNet, value: money(totals.net) });
-      totalRows.push({ label: L.totalVat, value: money(totals.vat) });
+      totalRows.push({ label: regime.generic ? (sales.subtotal || 'Subtotal') : L.totalNet, value: money(totals.net) });
+      totalRows.push({ label: regime.generic ? taxWord : L.totalVat, value: money(totals.vat) });
     }
     if (totals.rounding !== 0) totalRows.push({ label: L.rounding, value: money(totals.rounding) });
     var grandLabel = L.totalDue;
-    if (!kind.payable) grandLabel = vatMode === 'vat' ? L.totalGross : L.total;
+    if (!kind.payable) grandLabel = vatMode === 'vat' && !regime.generic ? L.totalGross : L.total;
     else if (totals.payable < 0) grandLabel = L.total;
 
     var notes = [];
-    if (vatMode === 'reverse') notes.push(L.notes.reverseCharge);
-    if (vatMode === 'none' && kind.series !== 'quote') notes.push(L.notes.nonVatPayer);
-    if (!kind.taxDocument && kind.payable && kind.series !== 'invoice') notes.push(L.notes.notTaxDocument);
+    // the sentences of VAT law are for VAT documents; another tax has no such thing to say
+    if (vatMode === 'reverse' && !regime.generic) notes.push(L.notes.reverseCharge);
+    if (vatMode === 'none' && kind.series !== 'quote' && !regime.generic) notes.push(L.notes.nonVatPayer);
+    if (!kind.taxDocument && kind.payable && kind.series !== 'invoice' && !regime.generic) notes.push(L.notes.notTaxDocument);
     if (invoice.kind === 'corrective' && invoice.correctionReason) notes.push(fill(L.notes.correctionReason, { reason: invoice.correctionReason }));
     // a Czech tax document in another currency also states the tax base and the tax in CZK (VAT Act, section 29)
     var czkRate = decToInt(invoice.exchangeRate, 4);
-    if (vatMode === 'vat' && kind.taxDocument && String(currency).toUpperCase() !== 'CZK' && czkRate > 0 && L.notes.czkRate && L.notes.czkLine) {
+    // only a Czech tax document has to say its tax in crowns
+    if (vatMode === 'vat' && kind.taxDocument && !regime.generic && countryProfile(invoice.supplier.country) === COUNTRIES.CZ &&
+        String(currency).toUpperCase() !== 'CZK' && czkRate > 0 && L.notes.czkRate && L.notes.czkLine) {
       var czkLines = [fill(L.notes.czkRate, { rate: formatScaled(czkRate, 4, 2, 4, F), currency: currency })];
       totals.byRate.forEach(function (r) {
         // convert the amount the prices were typed in, then take the tax from it exactly as in the document's own
@@ -1243,6 +1393,8 @@
     uid: uid, emptyParty: emptyParty, emptyBank: emptyBank, partySnapshot: partySnapshot,
     newCompany: newCompany, newItem: newItem, newInvoice: newInvoice, normalizeInvoice: normalizeInvoice, duplicateInvoice: duplicateInvoice,
     normalizeImage: normalizeImage, buildViewModel: buildViewModel,
-    countsAsIncome: countsAsIncome, periodKey: periodKey, periodKeys: periodKeys, overview: overview
+    countsAsIncome: countsAsIncome, periodKey: periodKey, periodKeys: periodKeys, overview: overview,
+    BANK_KINDS: BANK_KINDS, countryProfile: countryProfile, taxRegime: taxRegime, taxRatesFor: taxRatesFor, defaultTaxRate: defaultTaxRate,
+    bankKind: bankKind, validateRouting: validateRouting, followCountry: followCountry, usesPaymentSymbols: usesPaymentSymbols
   };
 });

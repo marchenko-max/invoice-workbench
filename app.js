@@ -1310,9 +1310,22 @@
     window.scrollTo(0, y);
   }
 
+  /** The rates on offer in a line's tax field: the country's own, and the company's usual one. */
+  function fillRates(doc) {
+    var list = $('#vat-list');
+    if (!list) return;
+    var company = companyById(doc.supplierId) || { country: doc.supplier.country };
+    var rates = C.taxRatesFor(doc.supplier.country);
+    var usual = C.defaultTaxRate(company);
+    if (rates.indexOf(usual) === -1) rates.unshift(usual);
+    list.textContent = '';
+    rates.forEach(function (r) { list.appendChild(h('option', { value: String(r) })); });
+  }
+
   function buildForm(form, doc) {
     var kind = C.kindOf(doc);
     fillUnits();
+    fillRates(doc);
     form.appendChild(sectionFrom(doc));
     form.appendChild(sectionTo(doc));
     form.appendChild(sectionDocument(doc, kind));
@@ -1331,6 +1344,7 @@
     for (var k in snap) if (String(snap[k] || '') !== String(doc.supplier[k] || '')) return true;
     var bank = Object.assign(C.emptyBank(), company.bank || {});
     for (var b in bank) if (b !== 'hidden' && String(bank[b] || '') !== String((doc.bank || {})[b] || '')) return true;
+    if (String(company.taxName || '') !== String(doc.taxName || '')) return true;
     return String(company.registerNote || '') !== String(doc.registerNote || '');
   }
 
@@ -1340,6 +1354,7 @@
     doc.bank = Object.assign(C.emptyBank(), company.bank || {});
     doc.bank.hidden = hidden;
     doc.registerNote = company.registerNote || '';
+    doc.taxName = company.taxName || '';
   }
 
   function switchSupplier(doc, company) {
@@ -1354,6 +1369,11 @@
     });
     ['id', 'createdAt', 'status', 'paidDate', 'customer', 'customerId', 'items', 'documentDiscount', 'orderNumber',
       'taxDate', 'correctedNumber', 'correctionReason'].forEach(function (k) { fresh[k] = doc[k]; });
+    // lines nobody has written on yet take the new company's usual rate; a line with anything on it keeps its own
+    var rate = fresh.vatApplies ? C.defaultTaxRate(company) : 0;
+    fresh.items.forEach(function (it) {
+      if (!String(it.description || '').trim() && !(Math.abs(C.parseNumber(it.price)) > 0)) it.vatRate = rate;
+    });
     if (String(doc.note || '').trim()) fresh.note = doc.note;
     Object.keys(fresh).forEach(function (k) { doc[k] = fresh[k]; });
   }
@@ -1390,7 +1410,7 @@
     sec.appendChild(h('div', { class: 'party-card' },
       h('span', { class: 'name', text: p.name || 'No company chosen' }),
       h('span', { class: 'muted', text: addressLine(p) }),
-      h('span', { class: 'muted num', text: [p.companyNumber ? 'IČO ' + p.companyNumber : '', p.taxNumber ? 'DIČ ' + p.taxNumber : ''].filter(Boolean).join('  ·  ') })));
+      h('span', { class: 'muted num', text: [p.companyNumber ? idShortNames(p)[0] + ' ' + p.companyNumber : '', p.taxNumber ? idShortNames(p)[1] + ' ' + p.taxNumber : ''].filter(Boolean).join('  ·  ') })));
     if (!S.example && company && supplierDiffers(doc, company)) {
       sec.appendChild(h('div', { class: 'row' },
         h('span', { class: 'hint warn', text: 'The company profile has changed since this document was written.' }),
@@ -1435,13 +1455,128 @@
     return el;
   }
 
+  /** What a company's two numbers are called where it is. */
+  function idFieldLabels(country) {
+    var c = String(country || 'CZ').toUpperCase();
+    if (c === 'CZ' || c === 'SK') return ['IČO (company number)', 'DIČ (VAT number)'];
+    if (c === 'UA') return ['ЄДРПОУ or РНОКПП (company code)', 'ІПН (VAT number)'];
+    if (c === 'US') return ['EIN (tax ID)', 'State tax ID (optional)'];
+    return ['Company number', 'VAT or tax number'];
+  }
+
+  /** The same two names, short, for where a number is shown rather than asked for. */
+  function idShortNames(party) {
+    var c = String((party && party.country) || 'CZ').toUpperCase();
+    if (c === 'CZ' || c === 'SK') return ['IČO', 'DIČ'];
+    if (c === 'UA') return [String(party.companyNumber || '').replace(/\D/g, '').length === 10 ? 'РНОКПП' : 'ЄДРПОУ', 'ІПН'];
+    if (c === 'US') return ['EIN', 'Tax ID'];
+    return ['Company no.', 'VAT no.'];
+  }
+
+  /** The tax as these screens call it: VAT, sales tax, or the name the company gave it. */
+  function taxWord(regime, capital) {
+    if (!regime.generic) return 'VAT';
+    return regime.word || (capital ? 'Sales tax' : 'sales tax');
+  }
+
+  function regimeOfCompany(company) { return C.taxRegime({ taxName: company && company.taxName, supplier: company }); }
+
+  function isCzechSupplier(doc) { return C.countryProfile(doc.supplier.country) === C.countryProfile('CZ'); }
+
+  /** The kinds of document in the words of the company's own tax. */
+  function kindLabel(k, doc) {
+    var regime = C.taxRegime(doc);
+    if (!regime.generic) return KIND_LABEL[k];
+    if (k === 'invoice_vat') return 'Invoice with ' + taxWord(regime);
+    if (k === 'invoice_novat') return 'Invoice with no tax';
+    if (k === 'quote_vat') return 'Quotation with ' + taxWord(regime);
+    if (k === 'quote_novat') return 'Quotation with no tax';
+    if (k === 'corrective') return 'Corrective invoice';
+    return KIND_LABEL[k];
+  }
+
+  var BANK_KIND_LABEL = {
+    cz: 'Czech account (number/bank code)',
+    iban: 'IBAN (Ukraine, the EU and most other countries)',
+    us: 'US account (routing and account number)'
+  };
+
+  /** The choice of how the account is written. `pick(kind)` stores it and redraws the form. */
+  function bankKindField(bank, country, prefix, pick) {
+    var select = h('select', { id: prefix + '-bank-kind' }, C.BANK_KINDS.map(function (k) { return h('option', { value: k, text: BANK_KIND_LABEL[k] }); }));
+    select.value = C.bankKind(bank, country);
+    select.addEventListener('change', function () { pick(select.value); });
+    return field('Kind of account', select, { cls: 'c12' });
+  }
+
+  /** The fields of an account that is an IBAN or a US account. Each says at once whether what was typed can be right. */
+  function foreignBankFields(bank, kind, country, prefix, changed) {
+    var out = [];
+    var watched = function (key, id, opts, verdict) {
+      var hint = h('span', { class: 'hint', id: prefix + '-' + id + '-hint' });
+      var update = function () {
+        var v = verdict(String(bank[key] || '').trim());
+        hint.className = 'hint' + (v[1] ? ' ' + v[1] : '');
+        hint.textContent = v[0];
+      };
+      opts.changed = function () { update(); changed(); };
+      var input = bindText(bank, key, prefix + '-' + id, opts);
+      update();
+      return { input: input, hint: hint };
+    };
+    var holder = field('Name of the account', bindText(bank, 'accountName', prefix + '-account-name', { changed: changed, placeholder: 'Optional' }), { cls: 'c6' });
+    var swift = function (cls, label) { return field(label || 'SWIFT / BIC', bindText(bank, 'swift', prefix + '-swift', { cls: 'mono', changed: changed }), { cls: cls }); };
+    var bankName = field('Bank', bindText(bank, 'bankName', prefix + '-bank-name', { changed: changed, placeholder: 'Name of the bank' }), { cls: 'c6' });
+    if (kind === 'us') {
+      var routing = watched('routing', 'routing', { cls: 'mono', inputmode: 'numeric', placeholder: '9 digits' }, function (v) {
+        if (!v) return ['The nine digits that name the bank, from a cheque or the bank\u2019s app', ''];
+        return C.validateRouting(v) ? ['Valid routing number', 'ok'] : ['Not a valid routing number: nine digits, and these do not add up', 'warn'];
+      });
+      out.push(bankName,
+        field('Routing number (ABA)', routing.input, { cls: 'c6', hint: routing.hint }),
+        field('Account number', bindText(bank, 'account', prefix + '-account', { cls: 'mono', inputmode: 'numeric', changed: changed }), { cls: 'c6' }),
+        holder,
+        swift('c6', 'SWIFT / BIC (for payments from abroad)'));
+    } else {
+      var iban = watched('iban', 'iban', { cls: 'mono', placeholder: country === 'UA' ? 'UA and 27 more characters' : '' }, function (v) {
+        var typed = C.cleanIban(v);
+        if (!typed) return ['The IBAN the customer pays to', ''];
+        return C.validateIban(typed) ? ['Valid IBAN', 'ok'] : ['Not a valid IBAN', 'warn'];
+      });
+      out.push(field('IBAN', iban.input, { cls: 'c8', hint: iban.hint }), swift('c4'), bankName, holder);
+    }
+    return out;
+  }
+
   /** The fields of a company, bound to `party`. `prefix` keeps the ids apart; `changed` runs after every edit. */
-  function partyFields(party, prefix, changed, refill) {
+  function partyFields(party, prefix, changed, refill, onCountry) {
     var hint = icoHint(party);
-    var ico = bindText(party, 'companyNumber', prefix + '-ico', { inputmode: 'numeric', cls: 'mono', changed: function () { hint.update(); changed(); } });
-    var icoField = field('IČO (company number)', ico, { cls: 'c4 half-sm', hint: hint });
-    var grid = h('div', { class: 'grid' }, icoField,
-      field('DIČ (VAT number)', bindText(party, 'taxNumber', prefix + '-dic', { changed: changed, cls: 'mono' }), { cls: 'c4 half-sm' }));
+    var names = idFieldLabels(party.country);
+    var ico = bindText(party, 'companyNumber', prefix + '-ico', { cls: 'mono', changed: function () { hint.update(); changed(); } });
+    var icoField = field(names[0], ico, { cls: 'c4 half-sm', hint: hint });
+    var dicField = field(names[1], bindText(party, 'taxNumber', prefix + '-dic', { changed: changed, cls: 'mono' }), { cls: 'c4 half-sm' });
+    // For one's own company the country comes first: it decides what the fields under it are. For a customer it
+    // is part of the address.
+    var countrySelect = bindSelect(party, 'country', prefix + '-country', countryOptions(), { changed: function () { countryChanged(); changed(); if (onCountry) onCountry(); } });
+    var countryField;
+    if (onCountry) {
+      countrySelect.style.maxWidth = '22rem';
+      countryField = field('Country', countrySelect, { cls: 'c12', hint: 'Decides what the tax and the company\u2019s numbers are called, and how the bank account is written.' });
+    } else {
+      countryField = field('Country', countrySelect, { cls: 'c4' });
+    }
+    var grid = h('div', { class: 'grid' }, onCountry ? countryField : null, icoField, dicField);
+    var lookWrap = null;
+    // what the numbers are called, the keyboard they are typed on and the register lookup all belong to the country
+    function countryChanged() {
+      var now = idFieldLabels(party.country);
+      icoField.querySelector('label').textContent = now[0];
+      dicField.querySelector('label').textContent = now[1];
+      var c = String(party.country || 'CZ').toUpperCase();
+      if (c === 'CZ' || c === 'SK' || c === 'UA') ico.setAttribute('inputmode', 'numeric'); else ico.removeAttribute('inputmode');
+      if (lookWrap) lookWrap.hidden = c !== 'CZ';
+      hint.update();
+    }
     if (canLookup) {
       var look = button('Look up in ARES', async function () {
         var v = String(party.companyNumber || '').replace(/\s/g, '');
@@ -1458,14 +1593,16 @@
         }
         look.disabled = false;
       }, 'small');
-      grid.appendChild(h('div', { class: 'field c4', style: 'justify-content:flex-end' }, look));
+      lookWrap = h('div', { class: 'field c4', style: 'justify-content:flex-end' }, look);
+      grid.appendChild(lookWrap);
     }
+    countryChanged();
     append(grid, [
       field('Name', bindText(party, 'name', prefix + '-name', { changed: changed }), { cls: 'c12' }),
       field('Street and number', bindText(party, 'street', prefix + '-street', { changed: changed }), { cls: 'c12' }),
       field('Postcode', bindText(party, 'postcode', prefix + '-zip', { changed: changed }), { cls: 'c3 half-sm' }),
-      field('City', bindText(party, 'city', prefix + '-city', { changed: changed }), { cls: 'c4 half-sm' }),
-      field('Country', bindSelect(party, 'country', prefix + '-country', countryOptions(), { changed: function () { hint.update(); changed(); } }), { cls: 'c4' })
+      field('City', bindText(party, 'city', prefix + '-city', { changed: changed }), { cls: onCountry ? 'c9 half-sm' : 'c4 half-sm' }),
+      onCountry ? null : countryField
     ]);
     var contact = h('details', { class: 'more', open: !!(party.email || party.phone || party.web) },
       h('summary', { text: 'E-mail, phone and web' }),
@@ -1541,7 +1678,10 @@
     var grid = h('div', { class: 'grid' });
     sec.appendChild(grid);
 
-    grid.appendChild(field('Type', bindSelect(doc, 'kind', 'f-kind', C.KIND_ORDER.map(function (k) { return { value: k, label: KIND_LABEL[k] }; }), {
+    grid.appendChild(field('Type', bindSelect(doc, 'kind', 'f-kind', C.KIND_ORDER.filter(function (k) {
+      // reverse charge is a VAT mechanism: a company with another tax is not offered it
+      return k !== 'reverse_charge' || k === doc.kind || !C.taxRegime(doc).generic;
+    }).map(function (k) { return { value: k, label: kindLabel(k, doc) }; }), {
       rebuild: true,
       after: function () {
         var k = C.kindOf(doc);
@@ -1569,12 +1709,14 @@
     grid.appendChild(field('Number', number, { cls: 'c6' }));
     grid.appendChild(field('Issued by', bindText(doc, 'issuedBy', 'f-issued-by', { placeholder: 'Name on the document' }), { cls: 'c6' }));
 
+    // payment symbols are a Czech and Slovak thing; a US account has no use for them
+    var symbols = C.usesPaymentSymbols(doc);
     var more = h('details', { class: 'more c12', open: !!(doc.recordNumber || doc.constantSymbol || doc.specificSymbol || doc.orderNumber) },
-      h('summary', { text: 'Variable symbol, other symbols and order number' }),
+      h('summary', { text: symbols ? 'Variable symbol, other symbols and order number' : 'Record number and order number' }),
       h('div', { class: 'grid' },
-        kind.payable ? field('Variable symbol', bindText(doc, 'variableSymbol', 'f-vs', { cls: 'mono', inputmode: 'numeric', filter: digits10 }), { cls: 'c4 half-sm', hint: 'Follows the number' }) : null,
-        kind.payable ? field('Constant symbol', bindText(doc, 'constantSymbol', 'f-ks', { cls: 'mono', inputmode: 'numeric', filter: digits10 }), { cls: 'c4 half-sm' }) : null,
-        kind.payable ? field('Specific symbol', bindText(doc, 'specificSymbol', 'f-ss', { cls: 'mono', inputmode: 'numeric', filter: digits10 }), { cls: 'c4 half-sm' }) : null,
+        kind.payable && symbols ? field('Variable symbol', bindText(doc, 'variableSymbol', 'f-vs', { cls: 'mono', inputmode: 'numeric', filter: digits10 }), { cls: 'c4 half-sm', hint: 'Follows the number' }) : null,
+        kind.payable && symbols ? field('Constant symbol', bindText(doc, 'constantSymbol', 'f-ks', { cls: 'mono', inputmode: 'numeric', filter: digits10 }), { cls: 'c4 half-sm' }) : null,
+        kind.payable && symbols ? field('Specific symbol', bindText(doc, 'specificSymbol', 'f-ss', { cls: 'mono', inputmode: 'numeric', filter: digits10 }), { cls: 'c4 half-sm' }) : null,
         field('Record number', bindText(doc, 'recordNumber', 'f-record', { cls: 'mono' }), { cls: 'c6', hint: 'Only when it differs from the number' }),
         field('Order number', bindText(doc, 'orderNumber', 'f-order', { cls: 'mono' }), { cls: 'c6' })));
     grid.appendChild(more);
@@ -1608,7 +1750,7 @@
       }
     });
     grid.appendChild(field('Issue date', issue, { cls: kind.taxDocument ? 'c6' : 'c12' }));
-    if (kind.taxDocument) grid.appendChild(field('Date of taxable supply', bindText(doc, 'taxDate', 'f-tax', { type: 'date' }), { cls: 'c6' }));
+    if (kind.taxDocument && !C.taxRegime(doc).generic) grid.appendChild(field('Date of taxable supply', bindText(doc, 'taxDate', 'f-tax', { type: 'date' }), { cls: 'c6' }));
 
     var dueOptions = C.DUE_OPTIONS.slice();
     if (doc.dueIn !== 'custom' && dueOptions.indexOf(Number(doc.dueIn)) === -1) dueOptions.push(Number(doc.dueIn));
@@ -1651,14 +1793,20 @@
       C.PAYMENT_METHODS.map(function (m) { return { value: m, label: PAYMENT_LABEL[m] }; }), { rebuild: true }), { cls: 'c6' }));
     if (doc.paymentMethod === 'transfer') {
       var bank = doc.bank;
-      grid.appendChild(field('Account number', bindText(bank, 'account', 'f-account', { cls: 'mono', placeholder: '123456789/0100' }),
-        { cls: 'c6', hint: h('span', { class: 'hint', id: 'account-hint' }) }));
-      grid.appendChild(field('Name of the account', bindText(bank, 'accountName', 'f-account-name', { placeholder: 'Optional' }), { cls: 'c6' }));
-      grid.appendChild(h('div', { class: 'c6', style: 'align-self:end' }, bindCheck(bank, 'showIban', 'f-show-iban', 'Print the IBAN and SWIFT too', { rebuild: true })));
-      if (bank.showIban) {
-        grid.appendChild(field('IBAN', bindText(bank, 'iban', 'f-iban', { cls: 'mono', placeholder: C.formatIban(C.czAccountToIban(bank.account)) || 'CZ..' }),
-          { cls: 'c8', hint: h('span', { class: 'hint', id: 'iban-hint' }) }));
-        grid.appendChild(field('SWIFT / BIC', bindText(bank, 'swift', 'f-swift', { cls: 'mono' }), { cls: 'c4' }));
+      var written = C.bankKind(bank, doc.supplier.country);
+      grid.appendChild(bankKindField(bank, doc.supplier.country, 'f', function (k) { bank.kind = k; touch(); rebuildForm(); }));
+      if (written === 'cz') {
+        grid.appendChild(field('Account number', bindText(bank, 'account', 'f-account', { cls: 'mono', placeholder: '123456789/0100' }),
+          { cls: 'c6', hint: h('span', { class: 'hint', id: 'account-hint' }) }));
+        grid.appendChild(field('Name of the account', bindText(bank, 'accountName', 'f-account-name', { placeholder: 'Optional' }), { cls: 'c6' }));
+        grid.appendChild(h('div', { class: 'c6', style: 'align-self:end' }, bindCheck(bank, 'showIban', 'f-show-iban', 'Print the IBAN and SWIFT too', { rebuild: true })));
+        if (bank.showIban) {
+          grid.appendChild(field('IBAN', bindText(bank, 'iban', 'f-iban', { cls: 'mono', placeholder: C.formatIban(C.czAccountToIban(bank.account)) || 'CZ..' }),
+            { cls: 'c8', hint: h('span', { class: 'hint', id: 'iban-hint' }) }));
+          grid.appendChild(field('SWIFT / BIC', bindText(bank, 'swift', 'f-swift', { cls: 'mono' }), { cls: 'c4' }));
+        }
+      } else {
+        append(grid, foreignBankFields(bank, written, doc.supplier.country, 'f', touch));
       }
       grid.appendChild(h('div', { class: 'c12' }, bindCheck(bank, 'hidden', 'f-bank-hidden', 'Hide the bank account on this document', { hint: '(the customer will not see where to pay)' })));
       grid.appendChild(h('div', { class: 'c12' }, bindCheck(doc, 'showQr', 'f-qr', 'Print a payment QR code'), h('span', { class: 'hint', id: 'qr-hint', style: 'display:block;margin-left:calc(var(--check) + 9px)' })));
@@ -1674,7 +1822,8 @@
     var head = h('header', null, h('h2', { text: 'Items' }));
     if (vatMode === 'vat') {
       var seg = h('div', { class: 'seg', role: 'group', 'aria-label': 'Prices are typed' });
-      [['net', 'Prices without VAT'], ['gross', 'Prices with VAT']].forEach(function (pair) {
+      var generic = C.taxRegime(doc).generic;
+      [['net', generic ? 'Prices before tax' : 'Prices without VAT'], ['gross', generic ? 'Prices with tax' : 'Prices with VAT']].forEach(function (pair) {
         seg.appendChild(h('button', {
           type: 'button', 'aria-pressed': String(C.priceModeOf(doc) === pair[0]), text: pair[1],
           onclick: function () { doc.priceMode = pair[0]; touch(); rebuildForm(); }
@@ -1693,7 +1842,7 @@
     var tools = h('div', { class: 'row' },
       button('Add an item', function () {
         var last = doc.items[doc.items.length - 1];
-        var item = C.newItem(vatMode === 'none' ? 0 : (last ? last.vatRate : C.VAT_RATES[0]));
+        var item = C.newItem(vatMode === 'none' ? 0 : (last ? last.vatRate : C.defaultTaxRate(companyById(doc.supplierId) || { country: doc.supplier.country })));
         if (last) item.unit = last.unit;
         doc.items.push(item);
         touch();
@@ -1722,7 +1871,7 @@
     row.appendChild(field('Description', bindText(item, 'description', id + '-desc', { multiline: true, rows: 1 }), { cls: 'desc' }));
     row.appendChild(field('Quantity', bindNumber(item, 'qty', id + '-qty')));
     row.appendChild(field('Unit', bindText(item, 'unit', id + '-unit', { list: 'unit-list', placeholder: 'ks' })));
-    if (vatMode !== 'none') row.appendChild(field('VAT %', bindNumber(item, 'vatRate', id + '-vat', { list: 'vat-list' })));
+    if (vatMode !== 'none') row.appendChild(field(taxWord(C.taxRegime(doc), true) + ' %', bindNumber(item, 'vatRate', id + '-vat', { list: 'vat-list' })));
     row.appendChild(field('Unit price', bindNumber(item, 'price', id + '-price')));
 
     var foot = h('div', { class: 'foot' });
@@ -1762,7 +1911,7 @@
       I18N.list().map(function (l) { return { value: l.code, label: l.name }; }), { after: fillUnits }), { cls: 'c6' }));
     grid.appendChild(field('Currency', bindSelect(doc, 'currency', 'f-currency',
       C.CURRENCIES.map(function (c) { return { value: c.code, label: c.code + (c.symbol && c.symbol !== c.code ? '  (' + c.symbol + ')' : '') }; }), { rebuild: true }), { cls: 'c6' }));
-    if (doc.currency !== 'CZK' && C.vatModeOf(doc) === 'vat' && C.kindOf(doc).taxDocument) {
+    if (doc.currency !== 'CZK' && C.vatModeOf(doc) === 'vat' && C.kindOf(doc).taxDocument && isCzechSupplier(doc) && !C.taxRegime(doc).generic) {
       grid.appendChild(field('Exchange rate: CZK for 1 ' + doc.currency, bindNumber(doc, 'exchangeRate', 'f-rate', { placeholder: 'for example 25.250' }),
         { cls: 'c6', hint: 'Printed with the tax base and VAT in CZK, as a Czech tax document requires.' }));
     }
@@ -1826,7 +1975,7 @@
       return x !== doc && x.supplierId === doc.supplierId && C.kindOf(x).series === kind.series && String(x.number) === String(doc.number);
     })) out.push('Number ' + doc.number + ' is already used by another document of this company.');
     if (doc.customer.country === 'CZ' && doc.customer.companyNumber && !C.validateIco(doc.customer.companyNumber)) out.push("The customer's IČO is not valid.");
-    if (totals.vatMode !== 'none' && !String(doc.supplier.taxNumber || '').trim()) out.push('A VAT payer has to print their DIČ. Add it to the company profile.');
+    if (totals.vatMode !== 'none' && !C.taxRegime(doc).generic && !String(doc.supplier.taxNumber || '').trim()) out.push('A VAT payer has to print their ' + idShortNames(doc.supplier)[1] + '. Add it to the company profile.');
     if (totals.vatMode === 'reverse' && !String(doc.customer.taxNumber || '').trim()) out.push("Reverse charge needs the customer's DIČ.");
     if (kind.payable && C.isIsoDate(doc.dueDate) && C.isIsoDate(doc.issueDate) && doc.dueDate < doc.issueDate) out.push('The due date is before the issue date.');
     if (kind.payable && doc.paymentMethod === 'transfer' && doc.bank.hidden) {
@@ -1835,14 +1984,25 @@
     if (kind.payable && doc.paymentMethod === 'transfer' && !doc.bank.hidden) {
       var account = String(doc.bank.account || '').trim();
       var iban = C.cleanIban(doc.bank.iban);
-      if (!account && !iban) out.push('There is no bank account, so the customer has nowhere to pay.');
-      if (account && !C.parseCzAccount(account)) out.push('The account number is not in the Czech form, such as 19-123456789/0100.');
-      else if (account && !C.validateCzAccount(account)) out.push('The account number fails its check digits. Look for a typo.');
-      if (iban && !C.validateIban(iban)) out.push('The IBAN is not valid.');
+      var written = C.bankKind(doc.bank, doc.supplier.country);
+      if (written === 'us') {
+        var routing = String(doc.bank.routing || '').trim();
+        if (!account) out.push('There is no account number, so the customer has nowhere to pay.');
+        if (!routing) out.push('A US account also needs its routing number.');
+        else if (!C.validateRouting(routing)) out.push('The routing number is not valid: it has nine digits, and these do not add up.');
+      } else if (written === 'iban') {
+        if (!iban) out.push('There is no IBAN, so the customer has nowhere to pay.');
+        else if (!C.validateIban(iban)) out.push('The IBAN is not valid.');
+      } else {
+        if (!account && !iban) out.push('There is no bank account, so the customer has nowhere to pay.');
+        if (account && !C.parseCzAccount(account)) out.push('The account number is not in the Czech form, such as 19-123456789/0100.');
+        else if (account && !C.validateCzAccount(account)) out.push('The account number fails its check digits. Look for a typo.');
+        if (iban && !C.validateIban(iban)) out.push('The IBAN is not valid.');
+      }
     }
     if (doc.kind === 'corrective' && !String(doc.correctedNumber || '').trim()) out.push('A corrective document names the document it corrects.');
     if (doc.kind === 'corrective' && !String(doc.correctionReason || '').trim()) out.push('A corrective document states the reason for the correction.');
-    if (totals.vatMode === 'vat' && kind.taxDocument && doc.currency !== 'CZK' && !(C.parseNumber(doc.exchangeRate) > 0)) {
+    if (totals.vatMode === 'vat' && kind.taxDocument && doc.currency !== 'CZK' && isCzechSupplier(doc) && !C.taxRegime(doc).generic && !(C.parseNumber(doc.exchangeRate) > 0)) {
       out.push('A VAT document in ' + doc.currency + ' also has to state the tax in CZK. Fill in the exchange rate under Language and look.');
     }
     return out;
@@ -1878,8 +2038,9 @@
         box.appendChild(h('dd', { class: cls, text: value }));
       };
       if (totals.vatMode === 'vat') {
-        add('Total without VAT', money(totals.net, cur));
-        totals.byRate.forEach(function (r) { add('VAT ' + C.formatPercent(r.rateBp / 100, UI), money(r.vat, cur)); });
+        var regime = C.taxRegime(doc);
+        add(regime.generic ? 'Subtotal' : 'Total without VAT', money(totals.net, cur));
+        totals.byRate.forEach(function (r) { add(taxWord(regime, true) + ' ' + C.formatPercent(r.rateBp / 100, UI), money(r.vat, cur)); });
       }
       if (totals.rounding !== 0) add('Rounding', money(totals.rounding, cur));
       add(C.kindOf(doc).payable ? 'To pay' : 'Total', money(totals.payable, cur), 'grand');
@@ -1911,8 +2072,9 @@
       else if (!doc.showQr) qrHint.textContent = 'Tick it so the customer can scan the code in a banking app and pay.';
       else if (doc.bank.hidden) qrHint.textContent = 'Not printed while the bank account is hidden. Untick "Hide the bank account" above.';
       else if (!(totals.payable > 0)) qrHint.textContent = 'Printed once there is an amount to pay.';
+      else if (C.bankKind(doc.bank, doc.supplier.country) === 'us') qrHint.textContent = 'A payment code needs an IBAN, and a US account has none.';
       else if (!C.resolveIban(doc.bank)) qrHint.textContent = 'Needs a valid account number or IBAN.';
-      else qrHint.textContent = 'Printed for a Czech account, or for a euro payment to any IBAN.';
+      else qrHint.textContent = 'Printed for a Czech account, or for a euro payment to an IBAN in the SEPA area.';
     }
 
     var checks = $('#checks');
@@ -2237,7 +2399,7 @@
           h('td', { class: 'num', 'data-label': 'IČO', text: c.companyNumber || '' }),
           h('td', { class: 'num', 'data-label': 'DIČ', text: c.taxNumber || '' }),
           h('td', { 'data-label': 'Documents', text: String(count) }),
-          isSupplier ? h('td', null, h('span', { class: 'chip ' + (c.vatPayer ? 'issued' : ''), text: c.vatPayer ? 'VAT payer' : 'Not a VAT payer' })) : null);
+          isSupplier ? h('td', null, h('span', { class: 'chip ' + (c.vatPayer ? 'issued' : ''), text: regimeOfCompany(c).generic ? (c.vatPayer ? 'Charges ' + taxWord(regimeOfCompany(c)) : 'Charges no tax') : (c.vatPayer ? 'VAT payer' : 'Not a VAT payer') })) : null);
         var actions = h('td', { class: 'actions' });
         actions.appendChild(button('New document', function () {
           if (isSupplier) newDocument(c);
@@ -2480,6 +2642,16 @@
       work.defaults = Object.assign({}, C.SUPPLIER_DEFAULTS, work.defaults || {});
     }
     var noop = function () {};
+    // the last country the company had that says anything about currency and language
+    var countryBefore = work.country;
+    var bankIsEmpty = function () {
+      var b = work.bank;
+      return !['account', 'iban', 'swift', 'routing', 'bankName'].some(function (k) { return String(b[k] || '').trim(); });
+    };
+    // The kind of account is settled here and saved with the company: read from what an older record holds, or
+    // from the country for an empty one. Left to be guessed later, an American account with no routing number
+    // yet would be taken for a Czech one.
+    if (isSupplier && !work.bank.kind) work.bank.kind = C.bankKind(work.bank, work.country);
 
     function build() {
       // the form is drawn again (a register lookup filled it in): ink on an open pad comes along rather than vanish
@@ -2491,9 +2663,27 @@
       dlg.textContent = '';
       var body = h('div', { class: 'dialog-body' });
       var identity = h('fieldset', null, h('legend', { text: isSupplier ? 'Your company' : 'Customer' }));
-      append(identity, partyFields(work, 'co', noop, build));
+      append(identity, partyFields(work, 'co', noop, build, isSupplier ? function () {
+        // a company being added takes its country's currency and language; one that exists keeps what it has
+        if (opts.isNew) C.followCountry(work, countryBefore);
+        if (C.countryProfile(work.country).currency) countryBefore = work.country;
+        // an account nobody has filled in yet is written the way the new country writes one
+        if (bankIsEmpty()) work.bank.kind = C.countryProfile(work.country).bank;
+        build();
+        var again = document.getElementById('co-country');
+        if (again) again.focus();
+      } : null));
       if (isSupplier) {
-        identity.appendChild(bindCheck(work, 'vatPayer', 'co-vat', 'This company is a VAT payer', { changed: noop, hint: '(new documents start as invoices with VAT)' }));
+        var regime = regimeOfCompany(work);
+        var salesTax = C.countryProfile(work.country).tax === 'sales';
+        var usual = C.taxRatesFor(work.country)[0];
+        identity.appendChild(bindCheck(work, 'vatPayer', 'co-vat', regime.generic ? 'This company charges ' + taxWord(regime) : 'This company is a VAT payer',
+          { changed: noop, hint: regime.generic ? '(new documents start with it)' : '(new documents start as invoices with VAT)' }));
+        identity.appendChild(h('div', { class: 'grid' },
+          field('Name of the tax on documents', bindText(work, 'taxName', 'co-tax-name', { changed: noop, maxlength: 24, placeholder: salesTax ? 'Sales tax' : 'VAT' }),
+            { cls: 'c8', hint: salesTax ? 'Leave empty for \u201cSales tax\u201d in the document\u2019s language.' : 'Leave empty for VAT. Fill in only if the tax has another name, such as GST.' }),
+          field('Usual rate (%)', bindText(work.defaults, 'taxRate', 'co-tax-rate', { changed: noop, cls: 'num', inputmode: 'decimal', placeholder: usual == null ? '0' : String(usual) }),
+            { cls: 'c4', hint: 'What a new line starts with.' })));
       }
       body.appendChild(identity);
 
@@ -2507,13 +2697,24 @@
           else { accountHint.textContent = 'Check the number: it should look like 19-123456789/0100'; accountHint.className = 'hint warn'; }
         };
         updateAccount();
-        body.appendChild(h('fieldset', null, h('legend', { text: 'Bank account' }),
-          h('div', { class: 'grid' },
+        var written = C.bankKind(work.bank, work.country);
+        var bankGrid = h('div', { class: 'grid' }, bankKindField(work.bank, work.country, 'co', function (k) {
+          work.bank.kind = k;
+          build();
+          var again = document.getElementById('co-bank-kind');
+          if (again) again.focus();
+        }));
+        if (written === 'cz') {
+          append(bankGrid, [
             field('Account number', bindText(work.bank, 'account', 'co-account', { cls: 'mono', changed: updateAccount, placeholder: '123456789/0100' }), { cls: 'c6', hint: accountHint }),
             field('Name of the account', bindText(work.bank, 'accountName', 'co-account-name', { changed: noop, placeholder: 'Optional' }), { cls: 'c6' }),
             field('IBAN', bindText(work.bank, 'iban', 'co-iban', { cls: 'mono', changed: noop, placeholder: 'Only for a foreign account' }), { cls: 'c8' }),
             field('SWIFT / BIC', bindText(work.bank, 'swift', 'co-swift', { cls: 'mono', changed: noop }), { cls: 'c4' }),
-            h('div', { class: 'c12' }, bindCheck(work.bank, 'showIban', 'co-show-iban', 'Print the IBAN and SWIFT on documents', { changed: noop })))));
+            h('div', { class: 'c12' }, bindCheck(work.bank, 'showIban', 'co-show-iban', 'Print the IBAN and SWIFT on documents', { changed: noop }))]);
+        } else {
+          append(bankGrid, foreignBankFields(work.bank, written, work.country, 'co', noop));
+        }
+        body.appendChild(h('fieldset', null, h('legend', { text: 'Bank account' }), bankGrid));
 
         var d = work.defaults;
         var patternHint = h('span', { class: 'hint' });
@@ -2560,6 +2761,22 @@
           }
           return;
         }
+        // every check that can refuse the save comes first: nothing below may run for a save that does not go ahead
+        var rate = '';
+        if (isSupplier) {
+          // an empty usual rate means "the country's own"; anything else has to be a rate, and is said if it is not
+          rate = String(work.defaults.taxRate == null ? '' : work.defaults.taxRate).replace(/%/g, '').trim();
+          if (rate !== '' && !(C.parseNumber(rate) >= 0 && C.parseNumber(rate) <= 100)) {
+            toast('The usual rate is a number from 0 to 100, such as 8.25. Correct it or leave it empty.', 'bad');
+            var rateField = document.getElementById('co-tax-rate');
+            if (rateField) {
+              rateField.setAttribute('aria-invalid', 'true');
+              rateField.addEventListener('input', function () { rateField.removeAttribute('aria-invalid'); }, { once: true });
+              rateField.focus();
+            }
+            return;
+          }
+        }
         // a signature drawn and not yet taken with "Use this signature" is taken now, once the save is going ahead:
         // Save means keep what I see
         var pad = dlg.querySelector('.sign');
@@ -2571,6 +2788,8 @@
           var days = Number(work.defaults.dueDays);
           work.defaults.dueDays = days >= 0 && days <= 3650 ? Math.round(days) : 14;
           if (!/N/.test(String(work.defaults.numberPattern || ''))) work.defaults.numberPattern = 'YYYYNNNN';
+          work.taxName = String(work.taxName || '').trim().slice(0, 24);
+          work.defaults.taxRate = rate === '' ? '' : String(C.parseNumber(rate));
         }
         Object.keys(company).forEach(function (k) { delete company[k]; });
         Object.assign(company, work);

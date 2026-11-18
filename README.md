@@ -20,6 +20,23 @@ details; your company and your customers are added with them; an invoice that is
 ISDOC does not say whether an invoice was paid, so the import asks how to read that. Spreadsheet exports
 (XLSX, CSV) have no invoice lines and are not read.
 
+## Companies outside the Czech Republic
+
+A company's country decides what its documents say. Set it in the company profile:
+
+- **Ukraine**: ПДВ at 20, 14, 7 or 0 %, the company's ЄДРПОУ (or a person's РНОКПП) and ІПН under their own names,
+  and an IBAN. A new Ukrainian company starts in hryvnias and in Ukrainian.
+- **United States**: there is no VAT, so the invoice has a subtotal, one sales tax line at the rate you set, and a
+  total; the EIN is printed as an EIN; the bank account is a routing number and an account number, with a SWIFT
+  code for payments from abroad.
+- **Slovakia**: VAT at 23, 19, 5 or 0 %, and an IBAN.
+- **Anywhere else**: VAT at the rate you type and an IBAN. If the tax is called something else, such as GST, give
+  it that name in the company profile and the documents use it.
+
+The kind of account (Czech number, IBAN, or US routing and account number) can be chosen apart from the country,
+for a Czech company with a dollar account, for example. A payment QR code is printed for Czech accounts and for
+euro payments to an IBAN in the SEPA area; nowhere else is there a code a banking app would understand.
+
 ## Signing
 
 **Any document.** The **Sign** tab opens a PDF, or a photo or scan of a page (JPG, PNG), and lets you put your
@@ -73,7 +90,8 @@ node test/app-smoke.js       # drives the page in headless Chrome (macOS path to
 ```
 
 The other `test/*.js` scripts run the same way: `hosted-smoke.js`, `folder-smoke.js`, `folder-regress.js`,
-`review-regress.js`, `redesign-check.js`, `import-smoke.js`, `signature-check.js`, `overview-check.js`, `sign-check.js`.
+`review-regress.js`, `redesign-check.js`, `import-smoke.js`, `signature-check.js`, `overview-check.js`, `sign-check.js`,
+`countries-check.js`.
 
 ## Credits
 
